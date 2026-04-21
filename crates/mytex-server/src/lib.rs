@@ -1,20 +1,27 @@
 //! Mytex server — HTTP API.
 //!
-//! Today (Phase 2b.1) the surface is limited to user authentication:
-//! signup, login, session middleware, logout. Vault and index endpoints
-//! land in 2b.2; encryption in 2b.3; MCP HTTP/SSE + `context.propose`
-//! in 2b.4. See `docs/implementation-status.md` §Phase 2b.
+//! Phase 2b.1 shipped user auth (`/v1/auth/*`). Phase 2b.2 adds the
+//! tenant-scoped vault + index + tokens + audit surface under
+//! `/v1/t/:tid/*`. Encryption at rest lands in 2b.3; MCP HTTP/SSE +
+//! `context.propose` in 2b.4. See `docs/implementation-status.md` §Phase 2b.
 
 #![forbid(unsafe_code)]
 
 pub mod accounts;
+pub mod audit;
 pub mod auth;
 pub mod config;
+pub mod crypto_api;
+pub mod documents;
 pub mod error;
+pub mod idx;
 pub mod password;
+pub mod session_keys;
 pub mod sessions;
+pub mod tenants;
+pub mod tokens;
 
-use axum::{routing::get, Router};
+use axum::{middleware, routing::get, Router};
 use sqlx::PgPool;
 use std::sync::Arc;
 
@@ -23,12 +30,18 @@ use std::sync::Arc;
 pub struct AppState {
     pub db: PgPool,
     pub sessions: Arc<sessions::SessionService>,
+    pub session_keys: Arc<session_keys::SessionKeyStore>,
 }
 
 impl AppState {
     pub fn new(db: PgPool) -> Self {
         let sessions = Arc::new(sessions::SessionService::new(db.clone()));
-        AppState { db, sessions }
+        let session_keys = Arc::new(session_keys::SessionKeyStore::new());
+        AppState {
+            db,
+            sessions,
+            session_keys,
+        }
     }
 }
 
@@ -37,9 +50,34 @@ impl AppState {
 /// lets integration tests stand it up with `tower::ServiceExt` without
 /// a real network listener.
 pub fn router(state: AppState) -> Router {
+    // Tenant-scoped routes sit under `/v1/t/:tid`. Layers run bottom-up,
+    // so `session_auth` runs first (attaches `SessionContext`), then
+    // `tenant_auth` (checks membership + attaches `TenantContext`).
+    let tenant_routes: Router<AppState> = Router::new()
+        .merge(documents::router())
+        .merge(idx::router())
+        .merge(tokens::router())
+        .merge(audit::router())
+        .merge(crypto_api::router())
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            tenants::tenant_auth,
+        ))
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            auth::session_auth,
+        ));
+
+    // Session-authed, non-tenant-scoped (membership listing).
+    let tenants_route: Router<AppState> = tenants::router().route_layer(
+        middleware::from_fn_with_state(state.clone(), auth::session_auth),
+    );
+
     Router::new()
         .route("/healthz", get(healthz))
         .nest("/v1/auth", auth::router(state.clone()))
+        .nest("/v1", tenants_route)
+        .nest("/v1/t/:tid", tenant_routes)
         .with_state(state)
 }
 

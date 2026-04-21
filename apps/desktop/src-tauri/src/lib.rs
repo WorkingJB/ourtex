@@ -24,6 +24,10 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::workspace_list,
             commands::workspace_add,
+            commands::workspace_connect_remote,
+            commands::workspace_unlock,
+            commands::workspace_lock,
+            commands::workspace_crypto_state,
             commands::workspace_activate,
             commands::workspace_remove,
             commands::workspace_rename,

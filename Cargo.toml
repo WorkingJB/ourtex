@@ -7,6 +7,8 @@ members = [
     "crates/mytex-audit",
     "crates/mytex-mcp",
     "crates/mytex-server",
+    "crates/mytex-sync",
+    "crates/mytex-crypto",
     "apps/desktop/src-tauri",
 ]
 
@@ -39,11 +41,17 @@ tower = { version = "0.5", features = ["util"] }
 tower-http = { version = "0.6", features = ["trace", "cors"] }
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "postgres", "macros", "chrono", "uuid", "migrate"] }
 uuid = { version = "1", features = ["v4", "serde"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+url = { version = "2", features = ["serde"] }
+chacha20poly1305 = "0.10"
+zeroize = { version = "1", features = ["zeroize_derive"] }
 
 mytex-vault = { path = "crates/mytex-vault", version = "0.1.0" }
 mytex-index = { path = "crates/mytex-index", version = "0.1.0" }
 mytex-auth = { path = "crates/mytex-auth", version = "0.1.0" }
 mytex-audit = { path = "crates/mytex-audit", version = "0.1.0" }
+mytex-sync = { path = "crates/mytex-sync", version = "0.1.0" }
+mytex-crypto = { path = "crates/mytex-crypto", version = "0.1.0" }
 
 [profile.release]
 lto = "thin"

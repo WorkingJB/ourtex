@@ -30,6 +30,12 @@ pub enum ApiError {
     #[error("invalid argument: {0}")]
     InvalidArgument(String),
 
+    /// Tenant's content key is not currently live on the server. The
+    /// requested read/write on an encrypted resource can't proceed
+    /// until an unlocked client re-publishes the key.
+    #[error("vault locked")]
+    VaultLocked,
+
     #[error("internal server error")]
     Internal(#[source] BoxError),
 }
@@ -43,6 +49,10 @@ impl ApiError {
             ApiError::NotFound => StatusCode::NOT_FOUND,
             ApiError::Conflict(_) => StatusCode::CONFLICT,
             ApiError::InvalidArgument(_) => StatusCode::BAD_REQUEST,
+            // 423 Locked is the right semantic — the resource exists
+            // but can't currently be operated on. Clients reconnect
+            // an unlocked session and retry.
+            ApiError::VaultLocked => StatusCode::LOCKED,
             ApiError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
@@ -53,6 +63,7 @@ impl ApiError {
             ApiError::NotFound => "not_found",
             ApiError::Conflict(_) => "conflict",
             ApiError::InvalidArgument(_) => "invalid_argument",
+            ApiError::VaultLocked => "vault_locked",
             ApiError::Internal(_) => "server_error",
         }
     }
@@ -85,6 +96,9 @@ impl IntoResponse for ApiError {
                     ApiError::NotFound => "resource not found".into(),
                     ApiError::Conflict(m) => (*m).to_string(),
                     ApiError::InvalidArgument(m) => m.clone(),
+                    ApiError::VaultLocked => {
+                        "workspace content key is not currently live on the server; reconnect an unlocked client".into()
+                    }
                     ApiError::Internal(_) => "internal server error".into(),
                 },
             },

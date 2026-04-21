@@ -178,7 +178,7 @@ async fn logout_handler(
 /// Validates `Authorization: Bearer <token>`, attaches `SessionContext`
 /// to the request extensions, and hands off to the next handler.
 /// Any failure short-circuits with `401 Unauthorized`.
-async fn session_auth(
+pub async fn session_auth(
     State(state): State<AppState>,
     mut req: Request,
     next: Next,

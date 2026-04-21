@@ -23,6 +23,10 @@ mytex-vault = { workspace = true }
 mytex-index = { workspace = true }
 mytex-auth = { workspace = true }
 mytex-audit = { workspace = true }
+mytex-sync = { workspace = true }
+mytex-crypto = { workspace = true }
+uuid = { workspace = true }
+url = { workspace = true }
 
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"

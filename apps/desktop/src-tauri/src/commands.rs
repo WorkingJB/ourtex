@@ -4,12 +4,16 @@
 
 use crate::onboarding::{self, ChatMessage, SeedDocDraft};
 use crate::settings;
-use crate::state::{self, AppState};
+use crate::state::{self, AppState, HeartbeatHandle};
 use crate::watch;
 use crate::workspaces::WorkspaceEntry;
 use chrono::{DateTime, Duration, Utc};
 use mytex_audit::{verify, AuditEntry, Iter as AuditIter};
 use mytex_auth::{IssueRequest, Mode, Scope};
+use mytex_crypto::{
+    derive_master_key, unwrap_content_key, wrap_content_key, ContentKey, Salt, SealedBlob,
+};
+use mytex_sync::{list_tenants, login, LoginInput};
 use mytex_vault::{Document, DocumentId, Frontmatter, Visibility};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -108,6 +112,285 @@ pub async fn workspace_activate(
     activate_inner(&state, &app, &id).await
 }
 
+// ---------------- remote workspace connect ----------------
+
+#[derive(Debug, Deserialize)]
+pub struct ConnectRemoteInput {
+    pub server_url: String,
+    pub email: String,
+    pub password: String,
+    /// Optional workspace display name. Defaults to the server host +
+    /// the tenant name.
+    pub name: Option<String>,
+    /// If the user belongs to multiple tenants (2c), this selects one.
+    /// Null picks the first personal tenant (the common case today).
+    pub tenant_id: Option<uuid::Uuid>,
+}
+
+/// Log into a remote `mytex-server`, pick a tenant, register the
+/// workspace, and activate it. Persists the returned session token in
+/// the local registry so subsequent activations don't prompt.
+#[tauri::command]
+pub async fn workspace_connect_remote(
+    state: State<'_, AppState>,
+    app: AppHandle,
+    input: ConnectRemoteInput,
+) -> Result<VaultInfo, String> {
+    let server_url: url::Url = input
+        .server_url
+        .parse()
+        .map_err(|e| format!("invalid server url: {e}"))?;
+
+    // 1. login -> session token
+    let outcome = login(
+        &server_url,
+        &LoginInput {
+            email: input.email.trim().to_lowercase(),
+            password: input.password.clone(),
+            label: Some("mytex-desktop".into()),
+        },
+    )
+    .await
+    .map_err(|e| format!("login: {e}"))?;
+
+    // 2. list memberships and pick a tenant
+    let tenants = list_tenants(&server_url, &outcome.session.secret)
+        .await
+        .map_err(|e| format!("list tenants: {e}"))?;
+    let chosen = match input.tenant_id {
+        Some(id) => tenants
+            .into_iter()
+            .find(|t| t.tenant_id == id)
+            .ok_or_else(|| "selected tenant not found in memberships".to_string())?,
+        None => tenants
+            .into_iter()
+            .find(|t| t.kind == "personal")
+            .ok_or_else(|| {
+                format!(
+                    "no personal tenant for account on {}; pass tenant_id explicitly",
+                    server_url.host_str().unwrap_or("server")
+                )
+            })?,
+    };
+
+    // 3. pick cache root + register. Cache root is
+    //    `<home>/.mytex/remote/<workspace_id>/` — chosen below after
+    //    `add_remote` generates the id.
+    let name = input.name.unwrap_or_else(|| {
+        format!(
+            "{}@{}",
+            chosen.name,
+            server_url.host_str().unwrap_or("server")
+        )
+    });
+
+    let home = dirs_home();
+    let remote_base = home.join(".mytex").join("remote");
+    tokio::fs::create_dir_all(&remote_base)
+        .await
+        .map_err(|e| format!("create remote cache root: {e}"))?;
+
+    let id = state
+        .mutate_registry(|reg| {
+            // Use a placeholder cache path; we know the workspace_id only
+            // after registration, so we update the path in a second pass
+            // below. For `add_remote`'s dedupe-on-(url, tenant_id) check,
+            // the placeholder path is irrelevant.
+            let entry = reg.add_remote(
+                name.clone(),
+                remote_base.clone(),
+                server_url.to_string(),
+                chosen.tenant_id,
+                outcome.account.email.clone(),
+                outcome.session.secret.clone(),
+                outcome.session.expires_at,
+            );
+            let id = entry.id.clone();
+            Ok(id)
+        })
+        .await?;
+
+    // Rewrite the cache path to `~/.mytex/remote/<id>/`. Persist.
+    state
+        .mutate_registry(|reg| {
+            if let Some(w) = reg.workspaces.iter_mut().find(|w| w.id == id) {
+                w.path = remote_base.join(&id);
+            }
+            reg.set_active(&id)?;
+            Ok(())
+        })
+        .await?;
+
+    activate_inner(&state, &app, &id).await
+}
+
+fn dirs_home() -> PathBuf {
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
+// ---------------- unlock / lock (2b.3 encryption) ----------------
+
+#[derive(Debug, Deserialize)]
+pub struct UnlockInput {
+    pub passphrase: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct UnlockOutcome {
+    /// Seconds until the published key expires on the server, absent
+    /// further heartbeats. The heartbeat task refreshes well before
+    /// this, so the user-visible lock-out is much longer than this
+    /// value.
+    pub ttl_seconds: i64,
+    /// Document count after reindexing from the now-unlocked server.
+    pub document_count: u64,
+}
+
+/// Unlock the active remote workspace: derive the master key from
+/// the passphrase, fetch or seed the wrapped content key, publish the
+/// raw content key to the server, start the heartbeat, and reindex.
+///
+/// For a brand-new tenant the server has no crypto material yet; this
+/// command seeds it atomically (generate salt + content key, wrap,
+/// `POST /vault/init-crypto`). Subsequent unlocks skip seeding and
+/// just unwrap.
+#[tauri::command]
+pub async fn workspace_unlock(
+    state: State<'_, AppState>,
+    input: UnlockInput,
+) -> Result<UnlockOutcome, String> {
+    let svcs = state.active_services().await?;
+    if !svcs.is_remote() {
+        return Err("unlock is only meaningful for remote workspaces".into());
+    }
+    let client = svcs
+        .remote_client
+        .clone()
+        .ok_or_else(|| "remote workspace has no client handle".to_string())?;
+
+    let crypto = client
+        .get_crypto_state()
+        .await
+        .map_err(|e| format!("fetch crypto state: {e}"))?;
+
+    let (content_key, salt) = if crypto.seeded {
+        let salt_wire = crypto
+            .kdf_salt
+            .ok_or_else(|| "server reported seeded but returned no salt".to_string())?;
+        let wrapped_wire = crypto
+            .wrapped_content_key
+            .ok_or_else(|| "server reported seeded but returned no wrapped key".to_string())?;
+        let salt =
+            Salt::from_wire(&salt_wire).map_err(|e| format!("decode salt: {e}"))?;
+        let master = derive_master_key(&input.passphrase, &salt)
+            .map_err(|e| format!("derive master key: {e}"))?;
+        let wrapped = SealedBlob::from_wire(&wrapped_wire)
+            .map_err(|e| format!("decode wrapped key: {e}"))?;
+        let content = unwrap_content_key(&wrapped, &master)
+            .map_err(|_| "unwrap failed — wrong passphrase?".to_string())?;
+        (content, salt)
+    } else {
+        // First-time seed. Generate a fresh salt + random content key,
+        // wrap the content key under the passphrase-derived master,
+        // and post both to the server. Atomic failure modes:
+        //   - init-crypto 409 → someone beat us to seeding; re-fetch
+        //     and unwrap normally on the next attempt.
+        let salt = Salt::generate();
+        let master = derive_master_key(&input.passphrase, &salt)
+            .map_err(|e| format!("derive master key: {e}"))?;
+        let content = ContentKey::generate();
+        let wrapped = wrap_content_key(&content, &master)
+            .map_err(|e| format!("wrap content key: {e}"))?;
+        client
+            .init_crypto(&salt.to_wire(), &wrapped.to_wire())
+            .await
+            .map_err(|e| format!("init-crypto: {e}"))?;
+        (content, salt)
+    };
+    let _ = salt;
+
+    let publish = client
+        .publish_session_key(&content_key.to_wire())
+        .await
+        .map_err(|e| format!("publish session key: {e}"))?;
+
+    // Kick off the heartbeat. Any prior heartbeat on the current
+    // OpenVault is dropped + aborted by replacement.
+    let heartbeat = HeartbeatHandle::spawn(client.clone(), content_key.to_wire());
+    state.set_heartbeat(Some(heartbeat)).await;
+
+    // Now that the server can decrypt, do a reindex so the local
+    // cache reflects real content (pre-unlock reindex would have
+    // hit vault_locked and left the index empty).
+    let reindex_count = svcs
+        .index
+        .reindex_from(&*svcs.vault)
+        .await
+        .map_err(|e| format!("reindex: {e}"))?;
+
+    Ok(UnlockOutcome {
+        ttl_seconds: publish.ttl_seconds,
+        document_count: reindex_count.documents,
+    })
+}
+
+/// Lock the active remote workspace: stop the heartbeat and tell the
+/// server to drop the cached content key. The local index cache is
+/// left intact (it only holds metadata the user has already seen);
+/// future reads hit `vault_locked` until the next unlock.
+#[tauri::command]
+pub async fn workspace_lock(state: State<'_, AppState>) -> Result<(), String> {
+    let svcs = state.active_services().await?;
+    if !svcs.is_remote() {
+        return Err("lock is only meaningful for remote workspaces".into());
+    }
+    state.set_heartbeat(None).await; // drop => abort
+    if let Some(client) = svcs.remote_client {
+        if let Err(e) = client.revoke_session_key().await {
+            tracing::warn!(err = %e, "revoke_session_key failed");
+        }
+    }
+    Ok(())
+}
+
+/// Snapshot of the current crypto state for the active workspace —
+/// used by the UI to decide between "Connect" / "Unlock" / "Lock"
+/// affordances without exposing any secret material.
+#[derive(Debug, Serialize)]
+pub struct CryptoStateDto {
+    pub kind: String,
+    pub seeded: bool,
+    pub unlocked: bool,
+}
+
+#[tauri::command]
+pub async fn workspace_crypto_state(
+    state: State<'_, AppState>,
+) -> Result<CryptoStateDto, String> {
+    let svcs = state.active_services().await?;
+    if !svcs.is_remote() {
+        return Ok(CryptoStateDto {
+            kind: "local".into(),
+            seeded: false,
+            unlocked: true,
+        });
+    }
+    let client = svcs
+        .remote_client
+        .ok_or_else(|| "remote workspace has no client handle".to_string())?;
+    let c = client
+        .get_crypto_state()
+        .await
+        .map_err(|e| format!("fetch crypto state: {e}"))?;
+    Ok(CryptoStateDto {
+        kind: "remote".into(),
+        seeded: c.seeded,
+        unlocked: c.unlocked,
+    })
+}
+
 #[tauri::command]
 pub async fn workspace_remove(state: State<'_, AppState>, id: String) -> Result<(), String> {
     if state.is_active_open(&id).await {
@@ -199,14 +482,21 @@ async fn activate_inner(
         .map_err(|e| format!("list: {e}"))?;
     let count = list.len() as u64;
 
-    match watch::spawn(
-        opened.root.clone(),
-        opened.vault.clone(),
-        opened.index.clone(),
-        app.clone(),
-    ) {
-        Ok(handle) => opened._watcher = Some(handle),
-        Err(e) => tracing::warn!(err = %e, "fs watcher failed to start; live refresh disabled"),
+    // The fs watcher is local-only. Remote workspaces pick up server
+    // changes via periodic re-sync / SSE (deferred), not from a notify
+    // watcher on the cache directory.
+    if opened.kind == "local" {
+        match watch::spawn(
+            opened.root.clone(),
+            opened.vault.clone(),
+            opened.index.clone(),
+            app.clone(),
+        ) {
+            Ok(handle) => opened._watcher = Some(handle),
+            Err(e) => {
+                tracing::warn!(err = %e, "fs watcher failed to start; live refresh disabled")
+            }
+        }
     }
 
     let root = opened.root.to_string_lossy().to_string();
@@ -512,7 +802,9 @@ pub struct TokenIssueInput {
 #[tauri::command]
 pub async fn token_list(state: State<'_, AppState>) -> Result<Vec<TokenInfo>, String> {
     let svcs = state.active_services().await?;
-    let tokens = svcs.auth.list().await;
+    svcs.require_local("token listing")?;
+    let auth = svcs.auth.as_ref().expect("local has auth");
+    let tokens = auth.list().await;
     Ok(tokens.iter().map(public_to_info).collect())
 }
 
@@ -522,6 +814,8 @@ pub async fn token_issue(
     input: TokenIssueInput,
 ) -> Result<IssuedTokenDto, String> {
     let svcs = state.active_services().await?;
+    svcs.require_local("token issuance")?;
+    let auth = svcs.auth.as_ref().expect("local has auth");
     let scope = Scope::new(input.scope).map_err(|e| format!("scope: {e}"))?;
     let mode = match input.mode.as_str() {
         "read" => Mode::Read,
@@ -529,8 +823,7 @@ pub async fn token_issue(
         other => return Err(format!("unknown mode: {other}")),
     };
     let ttl = input.ttl_days.map(Duration::days);
-    let issued = svcs
-        .auth
+    let issued = auth
         .issue(IssueRequest {
             label: input.label,
             scope,
@@ -549,10 +842,9 @@ pub async fn token_issue(
 #[tauri::command]
 pub async fn token_revoke(state: State<'_, AppState>, id: String) -> Result<(), String> {
     let svcs = state.active_services().await?;
-    svcs.auth
-        .revoke(&id)
-        .await
-        .map_err(|e| format!("revoke: {e}"))
+    svcs.require_local("token revocation")?;
+    let auth = svcs.auth.as_ref().expect("local has auth");
+    auth.revoke(&id).await.map_err(|e| format!("revoke: {e}"))
 }
 
 // ---------------- audit ----------------
@@ -581,6 +873,7 @@ pub async fn audit_list(
     limit: Option<usize>,
 ) -> Result<AuditPage, String> {
     let svcs = state.active_services().await?;
+    svcs.require_local("audit log")?;
     let path = svcs.root.join(".mytex/audit.jsonl");
     if !tokio::fs::try_exists(&path).await.unwrap_or(false) {
         return Ok(AuditPage {

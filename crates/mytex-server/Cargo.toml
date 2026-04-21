@@ -33,6 +33,9 @@ rand = { workspace = true }
 base64 = { workspace = true }
 subtle = { workspace = true }
 sha2 = { workspace = true }
+hex = { workspace = true }
+mytex-vault = { workspace = true }
+mytex-crypto = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

@@ -15,19 +15,21 @@ we are without reading git history.
 
 **Toolchain:** Rust 1.95.0 stable (rustup). Workspace at repo root.
 
-**Test totals:** 118/118 passing with `DATABASE_URL` set (for the
-`mytex-server` integration tests against a live Postgres); 109/109
-without. +23 tests for Phase 2b.1 (14 unit, 9 integration).
+**Test totals:** 148/148 passing with `DATABASE_URL` set; 128/128
+without the DB-required suite. +22 tests for Phase 2b.3 (13 crypto
+unit, 4 session-key-store unit, 5 encryption integration).
 
-| Crate         | Status        | Unit | Integration | Notes                                  |
-|---------------|---------------|-----:|------------:|----------------------------------------|
-| `mytex-vault` | ✅ shipped     | 12   | 6           | Format parser + `PlainFileDriver`      |
-| `mytex-audit` | ✅ shipped     | 2    | 5           | Hash-chained JSONL log                 |
-| `mytex-auth`  | ✅ shipped     | 11   | 9           | Opaque tokens + Argon2id + scopes      |
-| `mytex-index` | ✅ shipped     | 4    | 6           | SQLite + FTS5; search / graph / filter |
-| `mytex-mcp`   | ✅ shipped     | 11   | 22          | JSON-RPC + stdio; rate limit + fs watcher |
-| `mytex-desktop` | ✅ Phase 2a  | 7    | —           | Multi-vault switcher + workspace registry |
-| `mytex-server`| ✅ Phase 2b.1 | 14   | 9           | Axum + Postgres + opaque sessions      |
+| Crate          | Status        | Unit | Integration | Notes                                  |
+|----------------|---------------|-----:|------------:|----------------------------------------|
+| `mytex-vault`  | ✅ shipped     | 12   | 6           | Format parser + `PlainFileDriver`      |
+| `mytex-audit`  | ✅ shipped     | 2    | 5           | Hash-chained JSONL log                 |
+| `mytex-auth`   | ✅ shipped     | 11   | 9           | Opaque tokens + Argon2id + scopes      |
+| `mytex-index`  | ✅ shipped     | 4    | 6           | SQLite + FTS5; search / graph / filter |
+| `mytex-mcp`    | ✅ shipped     | 11   | 22          | JSON-RPC + stdio; rate limit + fs watcher |
+| `mytex-desktop`| ✅ 2a + 2b.2 + 2b.3 | 7 | —           | Multi-vault + remote connect + unlock/lock |
+| `mytex-server` | ✅ Phase 2b.3 | 20   | 20          | Auth + vault + index + tokens + audit + crypto |
+| `mytex-sync`   | ✅ 2b.2 + 2b.3 | 0   | —           | `RemoteVaultDriver` + crypto control calls |
+| `mytex-crypto` | ✅ Phase 2b.3 | 13   | —           | Argon2id KDF + XChaCha20-Poly1305 AEAD |
 
 ---
 
@@ -615,13 +617,468 @@ serves traffic, shuts down cleanly on SIGINT/SIGTERM.
   Production deployments add Caddy/Traefik/Nginx in front; we ship
   compose snippets for those when we publish the first image.
 
+### `mytex-server` — 2026-04-19 (Phase 2b.2 delta)
+
+Extends the 2b.1 surface with vault + index + tokens + audit endpoints
+scoped to a tenant, plus a `/v1/tenants` membership listing. Still
+plaintext at rest; encryption is 2b.3.
+
+**New routes (all require `Authorization: Bearer <session>`; all
+tenant-scoped routes additionally require membership):**
+
+| Method | Path                                         | Purpose                                      |
+| ---    | ---                                          | ---                                          |
+| GET    | `/v1/tenants`                                | Memberships for the logged-in account        |
+| GET    | `/v1/t/:tid/vault/docs`                      | List documents (`?type=…`)                   |
+| GET    | `/v1/t/:tid/vault/doc-count`                 | Cheap count for the desktop header           |
+| GET    | `/v1/t/:tid/vault/docs/:id`                  | Canonical source + metadata                  |
+| PUT    | `/v1/t/:tid/vault/docs/:id`                  | Upsert; optional `base_version` precondition |
+| DELETE | `/v1/t/:tid/vault/docs/:id`                  | Remove; optional `?base_version=…`           |
+| GET    | `/v1/t/:tid/index/search`                    | FTS over documents + filters                 |
+| GET    | `/v1/t/:tid/index/list`                      | Filtered listing (no bodies)                 |
+| GET    | `/v1/t/:tid/index/graph`                     | `{ nodes, edges }` with orphan edges filtered |
+| GET    | `/v1/t/:tid/index/backlinks/:id`             | Backlinks to a doc                           |
+| GET    | `/v1/t/:tid/index/outbound/:id`              | Outbound links from a doc                    |
+| GET    | `/v1/t/:tid/tokens`                          | List MCP tokens                              |
+| POST   | `/v1/t/:tid/tokens`                          | Issue an MCP token (secret shown once)       |
+| DELETE | `/v1/t/:tid/tokens/:token_id`                | Revoke an MCP token                          |
+| GET    | `/v1/t/:tid/audit`                           | Paginated per-tenant audit chain             |
+
+**New schema (`migrations/0002_vault.sql`):** `documents` +
+`doc_tags` + `doc_links` (with a generated `tsvector` column + GIN
+index for FTS); `audit_entries` (per-tenant hash-chained log, shape
+identical to `mytex-audit`'s JSONL wire format); `mcp_tokens` (mirrors
+`mytex-auth::StoredToken` — `mtx_*` secret, Argon2id-hashed at rest,
+scope + mode + limits).
+
+**New server modules:**
+
+- `tenants.rs` — `/v1/tenants` endpoint + `tenant_auth` middleware
+  that extracts `:tid`, joins `memberships`, attaches a
+  `TenantContext` to the request. A non-member hitting a tenant URL
+  gets `404 not_found` — enumeration-safe against tenant-id probing.
+- `documents.rs` — vault CRUD. Wire format is the canonical mytex-vault
+  source (YAML frontmatter + markdown body) as a single `source` field,
+  so the version hash computed server-side matches bit-for-bit whatever
+  the client computes locally.
+- `idx.rs` — search / list / graph / backlinks. FTS via
+  `websearch_to_tsquery` against a stored `tsvector` column;
+  `ts_rank_cd(...)::float8` cast so the real-typed rank deserializes
+  into Rust's `f64` (the default sqlx mapping of `real` is `f32`).
+- `tokens.rs` — per-tenant MCP tokens. Revoke-idempotent-or-404: the
+  second revoke of a token returns `404 not_found` since the
+  `UPDATE ... WHERE revoked_at IS NULL` clause matches zero rows.
+- `audit.rs` — `append(tx, tenant_id, record)` called from inside
+  the writer's transaction so a rolled-back mutation cannot leave
+  an "it happened" entry. Hash input struct is field-for-field
+  identical to `mytex-audit`'s, so a future export-to-JSONL job
+  emits records that `mytex_audit::verify` accepts unchanged.
+
+**Decisions recorded here:**
+
+- **Wire format for documents is canonical source, not a DTO.**
+  Sending the exact YAML+markdown bytes that `mytex-vault::Document`
+  produces on disk keeps the content hash identical whether computed
+  client-side or server-side. The frontmatter is *also* stored as
+  JSONB in the `documents` table for structured queries (type_,
+  visibility filters, `updated` date lookups in the FTS query), but
+  the wire + hash authoritative representation is the YAML text.
+- **Reads are audited; denied reads aren't a thing at this layer.**
+  The tenant guard runs first, so a non-member never reaches a
+  document handler. Inside the tenant, a logged-in user has full
+  access to every document — per-document scope enforcement is an
+  MCP-token concern (tokens have scopes; user sessions don't yet,
+  and `private` hard-floor enforcement at the HTTP layer lands when
+  the web client does in 2b.5). Session reads append one
+  `vault.read` audit entry per call with outcome `ok`.
+- **Audit append takes the table lock per tenant, not globally.**
+  `SELECT ... ORDER BY seq DESC LIMIT 1 FOR UPDATE` serializes
+  concurrent appends for the same tenant (next_seq + prev_hash race
+  is impossible). Other tenants are unaffected; at v1 scale the
+  per-tenant contention is negligible.
+- **Version precondition via `base_version` field, not `If-Match`.**
+  Keeps the wire shape JSON-only; no header plumbing through the
+  reqwest layer. A future MCP HTTP transport may add header support
+  for the HTTP-agent-RPC flavor.
+- **`sqlx::query_as` at runtime, not the `query!` macro** — matches
+  2b.1's decision. Migrate once CI has Postgres + `cargo sqlx
+  prepare`.
+- **Orphan edges filtered at the server.** `/index/graph` only emits
+  edges whose target is also a document in the tenant, so the
+  desktop graph view renders without dangling nodes. Same behavior
+  the local view already applied client-side.
+- **Tenant-scope isolation is path-based.** Every tenant-scoped
+  query includes `WHERE tenant_id = $1` — no cross-tenant joins
+  anywhere. A future row-level security policy would add defense in
+  depth; for v1 the query discipline is sufficient.
+
+**Integration tests (`tests/vault_flow.rs`):**
+
+- `vault_write_read_roundtrip` — PUT + GET of the same doc;
+  canonical source round-trips through `mytex-vault::Document::parse`.
+- `vault_version_conflict` — second write with a wrong
+  `base_version` returns `409` with `message = "version_conflict"`.
+- `vault_cross_tenant_is_not_found` — user B hitting user A's
+  tenant URL gets `404`, proving the tenant guard's enumeration
+  resistance.
+- `index_search_finds_content` — pins the private hard floor for
+  search: a doc with `visibility: private` must not surface when
+  `visibility=work,public` is passed; must surface when `private` is
+  in the visibility list.
+- `audit_chain_records_writes` — one PUT + one GET produces two
+  chained audit entries (`vault.write` at seq 0, `vault.read` at
+  seq 1 with `prev_hash == entry[0].hash`); `head_hash` in the
+  response equals the last entry's hash.
+- `tokens_issue_and_revoke` — issue returns the secret + public
+  info; list includes the new token; revoke returns 204; re-revoke
+  returns 404.
+
+### `mytex-sync` — 2026-04-19 (new, Phase 2b.2)
+
+Client-side library that turns a running `mytex-server` into a
+`VaultDriver` the existing local stack can use unchanged. Every caller
+of the trait — `mytex-index::Index::reindex_from`, the desktop's
+Tauri commands — works against a remote workspace without code
+changes downstream.
+
+**Public API:**
+
+- `RemoteConfig { server_url, tenant_id, session_token }`
+- `RemoteClient::new(config)` — shared `reqwest::Client` with bearer
+  auth preset and a structured error translation layer
+  (`unauthorized`, `not_found`, `conflict:version_conflict` promoted
+  to typed `SyncError` variants; other tags pass through as
+  `Server { status, tag, message }`).
+- `RemoteVaultDriver::new(client)` — `#[async_trait] impl
+  VaultDriver` over HTTP. Plus `write_versioned(id, doc, base_version)`
+  / `delete_versioned(id, base_version)` for callers that want the
+  version precondition.
+- `login(server_url, &LoginInput)` / `list_tenants(server_url, secret)`
+  — standalone helpers for the first-connection flow (the caller
+  doesn't have a tenant_id yet at login time, so these don't go
+  through `RemoteClient`).
+
+**Decisions recorded here:**
+
+- **No client-side cache layer inside `mytex-sync`.** Callers
+  construct a local `mytex-index::Index` at a cache path and call
+  `reindex_from(&remote_driver)` on open. Lists/searches then go
+  through the local Index (SQLite + FTS5), writes go through the
+  RemoteVaultDriver + mirror into the local Index. The alternative
+  — adding a TTL cache on top of every `VaultDriver::list` call —
+  would duplicate the Index's job and muddy the trait contract.
+  Revisit if the "reindex once at open" assumption stops holding.
+- **Synthetic `Entry.path` for remote listings.** `VaultDriver::list`
+  returns `Entry { id, type_, path }`; the path is only used
+  downstream by the FS watcher (local-only). Remote entries set
+  `path = "remote://<type>/<id>.md"` which is never dereferenced but
+  keeps the type contract.
+- **Error collapsing through `VaultDriver`.** The trait's error enum
+  (`VaultError`) is narrow — `NotFound`, `InvalidId`, etc. Network
+  errors and server-tagged errors collapse to `NotFound` with the
+  reason preserved in the message. Callers who need structured
+  access use `write_versioned` / `delete_versioned` directly and
+  get the full `SyncError` enum back.
+
+**Deps added to workspace:** `reqwest` (0.12, rustls-tls),
+`url` (2). Both already in the desktop crate; the workspace pin
+lets `mytex-sync` share them.
+
+### `mytex-desktop` — 2026-04-19 (Phase 2b.2 delta)
+
+Opens remote workspaces in the same UI shell as local ones. First-run
+users still get "Add workspace…" for local; a new `workspace_connect_remote`
+command handles the login → pick-tenant → register flow for remote.
+No URL routing change: the existing `WorkspaceSwitcher` lists both
+kinds.
+
+**Registry changes (`workspaces.rs`):**
+
+- `WorkspaceEntry` gains optional `server_url`, `tenant_id`,
+  `account_email`, `session_token`, `session_expires_at`.
+- `Registry::add_remote(name, cache_root, server_url, tenant_id,
+  email, session_token, expires_at)` — dedupes on
+  `(server_url, tenant_id)`; re-registration refreshes the stored
+  session token. No duplicate workspaces across (url, tenant) pairs.
+
+**State changes (`state.rs`):**
+
+- `OpenVault::auth` / `audit` become `Option<Arc<...>>` — remote
+  workspaces skip the local-only `TokenService` and `AuditWriter`
+  (the server owns both for remote tenants).
+- `open_workspace` dispatches on `entry.kind`:
+  - `"local"` → existing `PlainFileDriver` + local Index + tokens
+    + audit + (on activate) fs watcher.
+  - `"remote"` → `RemoteVaultDriver` + local Index at
+    `~/.mytex/remote/<workspace_id>/index.sqlite`, reindex_from the
+    server at open. Auth/audit/watcher are `None`.
+- `Services::require_local(feature)` — helper that gives a clear
+  error for remote workspaces hitting a local-only command.
+
+**Command changes (`commands.rs`):**
+
+- New `workspace_connect_remote(server_url, email, password, name?,
+  tenant_id?)` — logs in, lists tenants, picks the personal tenant
+  (or the one the caller specified), persists the session token, and
+  activates the resulting workspace. Cache root is
+  `~/.mytex/remote/<workspace_id>/`.
+- `token_*`, `audit_list`: call `require_local` and surface a clear
+  "not yet wired through the server" error for remote. Full wiring
+  (issue tokens via `POST /v1/t/:tid/tokens`, read audit via
+  `GET /v1/t/:tid/audit`) is a 2b.2 follow-up.
+- `doc_*`, `graph_snapshot`, `vault_info`: unchanged — they only
+  touch `vault` + `index`, both of which work against either driver.
+- `activate_inner` skips `watch::spawn` for remote workspaces.
+
+**Known gaps after Phase 2b.2:**
+
+- **No frontend "Connect to server" button yet.** The backend
+  command is wired; the React UI still only shows "Add workspace…"
+  (folder picker). Hooking up a modal that takes server URL +
+  email + password and calls `workspace_connect_remote` is a
+  5-minute follow-up — deliberately deferred from this session.
+- **Token + audit UIs are local-only for remote workspaces.** The
+  existing `TokensView` / `AuditView` show a "not supported on
+  remote" message. Routing them through `/v1/t/:tid/tokens` and
+  `/v1/t/:tid/audit` is a follow-up.
+- **Session token stored in plaintext in `workspaces.json`.** Same
+  threat model as the `.mytex/settings.json` Anthropic key; move
+  to `tauri-plugin-stronghold` / OS keychain in 2b.3 with the
+  unlock flow.
+- **No periodic re-sync.** Reindex runs once on open; a concurrent
+  edit from another client goes unseen until the next open. SSE /
+  polling is the plan (deferred this session); polling is the
+  cheaper first cut.
+- **Onboarding + `mytex-mcp` stdio still local-only.** Running the
+  local MCP server against a `RemoteVaultDriver` would let
+  stdio-launched agents read remote context; punted so we can ship
+  the HTTP endpoints first.
+
+### `mytex-crypto` — 2026-04-19 (new, Phase 2b.3)
+
+Passphrase KDF + AEAD primitives. Intentionally minimal — the crate
+exposes only what the client/server need to cooperate on
+session-bound decryption.
+
+**Public API:**
+
+- `Salt::generate()` / `to_wire()` / `from_wire(&str)` — 16-byte
+  KDF salt, base64url on the wire.
+- `derive_master_key(passphrase, &Salt) -> MasterKey` — Argon2id
+  (default profile) with an 8-char minimum passphrase check.
+- `ContentKey::generate()` — fresh random 32-byte AEAD key per
+  workspace. Zeroized on drop.
+- `wrap_content_key(&ContentKey, &MasterKey) -> SealedBlob` and
+  `unwrap_content_key(&SealedBlob, &MasterKey) -> Result<ContentKey>`
+  — XChaCha20-Poly1305 wrap/unwrap of the 32 key bytes.
+- `seal(plaintext, &[u8; 32]) -> SealedBlob` /
+  `open(&SealedBlob, &[u8; 32]) -> Result<Vec<u8>>` — general AEAD;
+  nonce is random per call and bundled into the sealed blob.
+- `SealedBlob::to_wire() / from_wire(&str)` — base64url-nopad of
+  `<24-byte nonce><ct+tag>`. Same format for wrapped keys and
+  encrypted document bodies.
+
+**Decisions recorded here:**
+
+- **XChaCha20-Poly1305 over plain ChaCha20-Poly1305.** 192-bit nonce
+  is long enough to pick at random per encryption without a counter
+  table. Removes an entire class of operational footguns.
+- **Argon2id `default()` profile.** Same as `mytex-server`'s
+  password hashing and `mytex-auth`'s token hashing — one parameter
+  set across the workspace, easy to bump in one place.
+- **`CryptoError::Open` collapses every decryption failure.** Wrong
+  key, tampered ciphertext, truncated nonce, and bad base64 all map
+  to the same variant so error output can't be used as an oracle.
+- **Zeroize on drop for `MasterKey` and `ContentKey`.** The inner
+  `[u8; 32]` is scrubbed when the handle leaves scope. Not a
+  defense against a compromised process — just reduces the window
+  for opportunistic memory dumps.
+- **No per-doc keys in this pass.** One content key per workspace;
+  every document's body is sealed under it. Per-doc keys + key
+  rotation are future work (touches the `key_version` column already
+  present in the schema for exactly this reason).
+- **No WASM feature gate yet.** The crate compiles only on native
+  targets. 2b.5 will add a `wasm` feature that strips `tokio` /
+  `rand::thread_rng()` for a browser build.
+
+### `mytex-server` — 2026-04-19 (Phase 2b.3 delta)
+
+Adds at-rest encryption to the vault endpoints, server-side
+session-key store, and four new control-plane routes. Encryption is
+**opt-in per tenant**: an unseeded tenant keeps storing plaintext,
+matching 2b.2's behaviour. New writes on a seeded tenant encrypt
+server-side; reads decrypt if the session key is live, else
+`423 Locked`.
+
+**New schema (`migrations/0003_encryption.sql`):**
+
+- `tenants`: `kdf_salt TEXT`, `wrapped_content_key TEXT`,
+  `key_version INT` — all NULL when the tenant hasn't seeded crypto.
+- `documents`: `body` becomes nullable; `body_ciphertext TEXT`,
+  `key_version INT`. CHECK constraint pins the invariant that
+  exactly one of `body` / `body_ciphertext` is populated.
+- `tsv` column re-expressed as
+  `to_tsvector('english', coalesce(title,'') || ' ' || coalesce(body,''))`
+  so encrypted rows produce an empty tsvector (no FTS on encrypted
+  content while locked).
+
+**New routes (all tenant-scoped):**
+
+| Method | Path                              | Purpose                                |
+| ---    | ---                               | ---                                    |
+| GET    | `/v1/t/:tid/vault/crypto`         | Fetch salt + wrapped content key + `unlocked` flag |
+| POST   | `/v1/t/:tid/vault/init-crypto`    | First-time seed (admin-only, 409 if already seeded) |
+| POST   | `/v1/t/:tid/session-key`          | Publish or refresh the live content key |
+| DELETE | `/v1/t/:tid/session-key`          | Drop the live content key (lock)       |
+
+**New server modules:**
+
+- `session_keys.rs` — in-memory `SessionKeyStore` (mutex-guarded
+  hashmap) keyed by tenant_id. 15-minute default TTL; entries
+  self-evict on the read path when expired. Keys never persist —
+  a process restart re-locks every tenant.
+- `crypto_api.rs` — the four new endpoints above. `init-crypto`
+  uses `UPDATE ... WHERE kdf_salt IS NULL` as a TOCTOU-free
+  idempotent-forbidden guard (409 if already seeded).
+- `documents.rs` — extended with `resolve_body` that picks plaintext
+  or decrypts ciphertext via the live session key. Writes branch on
+  whether the tenant is seeded: encrypt server-side if so, store
+  plaintext otherwise. `vault_locked` surfaces when the tenant is
+  seeded but no key is live.
+- `error.rs` — new `ApiError::VaultLocked` variant, status `423`,
+  tag `vault_locked`.
+
+**Decisions recorded here:**
+
+- **Server-side encryption, not end-to-end.** Matches ARCH.md §3.4
+  / D9: the server holds a short-lived content key and does
+  encrypt/decrypt in memory while a client is online. This lets
+  hosted agents (future MCP HTTP) read context without per-agent
+  key plumbing. Strict-E2EE is an explicit follow-up (no
+  `e2ee_opt_out` flag in 2b.3).
+- **`init-crypto` is admin-only, 409 on re-seed.** The passphrase
+  becomes the canonical recovery secret for every document in the
+  workspace — only an owner/admin can decide what it is. Re-seed
+  is refused because it would orphan every existing ciphertext;
+  key *rotation* is a future endpoint that re-wraps without
+  invalidating rows.
+- **`key_version` present but pinned to 1.** Rotation will advance
+  it; the column is plumbed through inserts + storage now so 2b.3+
+  can add versioning without a schema touch.
+- **FTS off for encrypted rows.** `coalesce(body, '')` in the tsv
+  expression means encrypted rows contribute nothing to search.
+  While a session key is live the server *could* decrypt during
+  write and materialize plaintext into a tsv, but that's a 2b.3+
+  optimisation.
+- **Session-key store is process-memory only.** Persisting would
+  defeat the locked-after-restart posture. A multi-process
+  deployment (Phase 2b.5+) either runs the store on one
+  consistent-hash-picked node or promotes it to a shared Redis —
+  TBD.
+
+**Integration tests (`tests/crypto_flow.rs`):**
+
+- `encrypted_round_trip` — seed, publish key, write, read; canonical
+  source round-trips through the server's AEAD path.
+- `vault_locked_without_key` — revoke the session key; subsequent
+  read returns 423 `vault_locked`; write also returns 423.
+- `wrong_passphrase_fails_to_unwrap` — client-side: fetching the
+  crypto state and deriving a master key with the wrong passphrase
+  cannot unwrap the content key.
+- `init_crypto_is_idempotent_forbidden` — second `init-crypto` on
+  the same tenant returns 409 `crypto_already_seeded`.
+- `plaintext_legacy_rows_still_readable` — unseeded tenants continue
+  to operate in plaintext mode; 2b.2 rows are unchanged.
+
+### `mytex-sync` — 2026-04-19 (Phase 2b.3 delta)
+
+Adds control-plane wrappers for the four new server endpoints. No
+data-path changes — reads/writes go through the existing
+`RemoteVaultDriver` and the server handles encryption transparently
+based on whether the session key is live.
+
+- `RemoteClient::get_crypto_state() -> CryptoState { seeded,
+  kdf_salt, wrapped_content_key, key_version, unlocked }`.
+- `RemoteClient::init_crypto(&salt_wire, &wrapped_wire)`.
+- `RemoteClient::publish_session_key(&key_wire)` — refreshes the
+  TTL on every call; heartbeat-friendly.
+- `RemoteClient::revoke_session_key()`.
+
+New workspace dep: `mytex-crypto`.
+
+### `mytex-desktop` — 2026-04-19 (Phase 2b.3 delta)
+
+Unlock / lock flow for remote workspaces.
+
+**New Tauri commands:**
+
+- `workspace_unlock(passphrase)` — derives the master key via
+  `mytex-crypto::derive_master_key`, fetches the server's crypto
+  state, and either (a) seeds crypto for a fresh tenant or (b)
+  unwraps the stored content key with the master. Publishes the
+  content key, spawns a heartbeat task, and runs a full
+  `reindex_from` now that the server can decrypt.
+- `workspace_lock()` — aborts the heartbeat task and calls
+  `DELETE /session-key`.
+- `workspace_crypto_state()` — reports `{ kind, seeded, unlocked }`
+  so the UI can choose between "Connect", "Unlock", and "Lock"
+  affordances without exposing any key material.
+
+**State changes (`state.rs`):**
+
+- `OpenVault` gains `remote_client: Option<Arc<RemoteClient>>` (so
+  unlock can reach `/vault/crypto` without downcasting
+  `Arc<dyn VaultDriver>`) and `heartbeat: Option<HeartbeatHandle>`
+  (dropping the vault aborts the background task).
+- `HeartbeatHandle::spawn(client, content_key_wire)` — republishes
+  every 4 minutes (at ~1/4 of the server's 15-minute default TTL),
+  cancelled on drop via `JoinHandle::abort`.
+- `open_remote` now tolerates `vault_locked` on the initial reindex
+  — a fresh remote workspace starts locked; the first successful
+  `workspace_unlock` call runs the real reindex.
+
+**Decisions recorded here:**
+
+- **No OS keychain yet.** The master key lives in client memory for
+  the duration of the workspace open. Locking or closing the app
+  drops it; re-unlock requires the passphrase. `keyring`-based
+  caching is explicitly a follow-up.
+- **No auto-unlock prompt yet.** The backend is ready; the React
+  modal that prompts the user at activate time and wires up the
+  `workspace_unlock` invocation is a remaining UI task.
+- **Heartbeat interval is 1/4 of server TTL.** One missed refresh
+  does not lock the workspace; two in a row does. Conservative but
+  cheap.
+
+**Known gaps after Phase 2b.3:**
+
+- **Unlock modal not wired in the React UI.** Backend commands
+  (`workspace_unlock` / `workspace_lock` / `workspace_crypto_state`)
+  compile and pass integration tests, but the desktop frontend
+  doesn't yet surface an "Unlock" affordance. Follow-up.
+- **Master key held only in client process memory.** Re-prompts
+  for passphrase on app restart. OS keychain integration is the
+  usual polish pass.
+- **FTS on encrypted content.** Encrypted rows are invisible to
+  server-side search. Re-populating tsv from plaintext during
+  write (while a session key is live) would fix this.
+- **No key rotation endpoint.** `key_version` column is ready;
+  endpoint to roll the content key + re-encrypt in batches is
+  follow-up.
+- **Strict-E2EE opt-out.** A per-account flag to skip server-side
+  decryption entirely (hosted agents see locked state for those
+  users) is explicit future work from D9.
+
 ## Phase 2 — Multi-vault, server, teams
 
-> Status: **in progress.** Phase 2a (multi-vault desktop) and
-> Phase 2b.1 (server skeleton + auth) have shipped; see "Shipped
-> crates" above for details. This section captures the remaining
-> shape and decisions so any working session can pick up without
-> re-deriving context.
+> Status: **in progress.** Phase 2a (multi-vault desktop), Phase 2b.1
+> (server skeleton + auth), Phase 2b.2 (vault + index + tokens +
+> audit endpoints + `mytex-sync`), and Phase 2b.3 (encryption at rest
+> + session-bound decryption + `mytex-crypto`) have shipped; see
+> "Shipped crates" above for details. Next up: 2b.4 (`context.propose`
+> + MCP HTTP/SSE + OAuth 2.1 + PKCE for agent tokens). This section
+> captures the remaining shape and decisions so any working session
+> can pick up without re-deriving context.
 
 ### Goals — six use cases
 
@@ -800,11 +1257,14 @@ Gets the deployment shape real before anything depends on it.
 - **Cuts:** no email verification, no password reset, no rate
   limiting beyond what axum/tower gives; all additive in 2b.x.
 
-##### 2b.2 — Vault + index endpoints, `mytex-sync` client
+##### 2b.2 — Vault + index endpoints, `mytex-sync` client **[SHIPPED 2026-04-19]**
 
 Server speaks the `VaultDriver` + `Index` + token + audit surface
-over HTTP. Desktop workspace `kind = "remote"` becomes usable.
-Still plaintext at rest; encryption retrofits in 2b.3.
+over HTTP. Desktop workspace `kind = "remote"` is wired through the
+backend; UI button for "Connect to server" is the last remaining
+gap (follow-up). Still plaintext at rest; encryption retrofits in
+2b.3. See "Shipped crates (details)" above for the route table,
+decisions, and test list.
 
 **New crate: `crates/mytex-sync`**
 
@@ -954,21 +1414,20 @@ the tag set aligned to `MCP.md` §7 (`unauthorized` covers out-of-scope
   server is authoritative. Desktop's local audit JSONL becomes a
   cache/mirror for local workspaces only.
 
-##### 2b.3 — `mytex-crypto` + session-bound decryption
+##### 2b.3 — `mytex-crypto` + session-bound decryption **[SHIPPED 2026-04-19]**
 
-Encryption at rest + the key hierarchy from ARCH §3.4 / Q3.
+Encryption at rest + the session-bound key-publish model from ARCH
+§3.4 / Q3. See "Shipped crates (details)" above for the route list,
+decisions, and test coverage. Highlights:
 
-- **New crate:** `crates/mytex-crypto` — libsodium or age wrappers.
-  Key hierarchy: `passphrase → master key (device-only) → session
-  key (TTL-bound) → per-doc keys`. WASM-compilable for the web
-  client (2b.5).
-- **Server changes:** store blobs encrypted; server holds a
-  short-lived session key published by an active client. When no
-  session key is live → falls back to opaque blobs, reads return
-  `-32006 / vault_locked`. Strict-E2EE opt-out is a per-account flag.
-- **Desktop changes:** unlock flow — passphrase once per session,
-  cached in OS keychain (keyring crate); session-key heartbeat to
-  server while unlocked.
+- `mytex-crypto` new: Argon2id KDF + XChaCha20-Poly1305 AEAD.
+- Server `/vault/crypto`, `/vault/init-crypto`, `/session-key`
+  endpoints; encrypted `documents.body_ciphertext` column.
+- Desktop `workspace_unlock` / `workspace_lock` commands with a
+  4-minute heartbeat task to refresh the server's content key.
+- Scope cuts for 2b.3 follow-ups: UI unlock modal, OS keychain,
+  per-doc keys, key rotation, strict-E2EE opt-out, FTS on
+  encrypted rows.
 
 ##### 2b.4 — `context.propose` + MCP HTTP/SSE
 
@@ -1097,13 +1556,15 @@ mytex/
 │  ├─ mytex-auth/             ✅ shipped
 │  ├─ mytex-index/            ✅ shipped
 │  ├─ mytex-mcp/              ✅ shipped
-│  └─ mytex-server/           ✅ Phase 2b.1
-│     ├─ src/                 lib + bin (axum HTTP API)
-│     ├─ migrations/          sqlx migrations (Postgres)
-│     ├─ tests/               integration tests (need live Postgres)
-│     ├─ Dockerfile           multi-stage, debian-slim runtime
-│     ├─ docker-compose.yml   postgres + server; dev profile
-│     └─ .env.example         reference env vars for compose
+│  ├─ mytex-server/           ✅ Phase 2b.3
+│  │  ├─ src/                 lib + bin (axum HTTP API)
+│  │  ├─ migrations/          sqlx migrations (Postgres)
+│  │  ├─ tests/               auth_flow.rs + vault_flow.rs + crypto_flow.rs (need live Postgres)
+│  │  ├─ Dockerfile           multi-stage, debian-slim runtime
+│  │  ├─ docker-compose.yml   postgres + server; dev profile
+│  │  └─ .env.example         reference env vars for compose
+│  ├─ mytex-sync/             ✅ 2b.2 + 2b.3 — RemoteVaultDriver + crypto control
+│  └─ mytex-crypto/           ✅ Phase 2b.3 — Argon2id KDF + XChaCha20-Poly1305 AEAD
 ├─ apps/
 │  └─ desktop/                ✅ Phase 2a
 │     ├─ src-tauri/           Rust (mytex-desktop crate)

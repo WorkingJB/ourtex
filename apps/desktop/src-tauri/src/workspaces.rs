@@ -13,6 +13,7 @@ use chrono::{DateTime, Utc};
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use uuid::Uuid;
 
 const REGISTRY_VERSION: u32 = 1;
 
@@ -39,9 +40,29 @@ impl Default for Registry {
 pub struct WorkspaceEntry {
     pub id: String,
     pub name: String,
+    /// `"local"` | `"remote"`.
     pub kind: String,
+    /// Filesystem root for local workspaces. For remote entries this is
+    /// the *cache* root under `~/.mytex/remote/<workspace_id>/` — the
+    /// frontend displays the server URL instead.
     pub path: PathBuf,
     pub added_at: DateTime<Utc>,
+
+    // --- remote-only fields (Phase 2b.2) ---
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tenant_id: Option<Uuid>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_email: Option<String>,
+    /// Session bearer token. Stored in plaintext inside the registry
+    /// file for now (same threat model as `.mytex/settings.json`).
+    /// Known gap: should move to the OS keychain in 2b.3 with the
+    /// crypto + unlock flow.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_token: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_expires_at: Option<DateTime<Utc>>,
 }
 
 impl Registry {
@@ -97,6 +118,50 @@ impl Registry {
             kind: "local".into(),
             path,
             added_at: Utc::now(),
+            server_url: None,
+            tenant_id: None,
+            account_email: None,
+            session_token: None,
+            session_expires_at: None,
+        };
+        self.workspaces.push(entry);
+        self.workspaces.last().unwrap()
+    }
+
+    /// Register a remote workspace. Dedupes on (server_url, tenant_id).
+    #[allow(clippy::too_many_arguments)]
+    pub fn add_remote(
+        &mut self,
+        name: String,
+        cache_root: PathBuf,
+        server_url: String,
+        tenant_id: Uuid,
+        account_email: String,
+        session_token: String,
+        session_expires_at: DateTime<Utc>,
+    ) -> &WorkspaceEntry {
+        if let Some(pos) = self.workspaces.iter().position(|w| {
+            w.kind == "remote"
+                && w.server_url.as_deref() == Some(server_url.as_str())
+                && w.tenant_id == Some(tenant_id)
+        }) {
+            // Refresh the session token on re-registration.
+            self.workspaces[pos].session_token = Some(session_token);
+            self.workspaces[pos].session_expires_at = Some(session_expires_at);
+            self.workspaces[pos].account_email = Some(account_email);
+            return &self.workspaces[pos];
+        }
+        let entry = WorkspaceEntry {
+            id: generate_workspace_id(),
+            name,
+            kind: "remote".into(),
+            path: cache_root,
+            added_at: Utc::now(),
+            server_url: Some(server_url),
+            tenant_id: Some(tenant_id),
+            account_email: Some(account_email),
+            session_token: Some(session_token),
+            session_expires_at: Some(session_expires_at),
         };
         self.workspaces.push(entry);
         self.workspaces.last().unwrap()
