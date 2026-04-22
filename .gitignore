@@ -12,3 +12,5 @@ Cargo.lock.bak
 /tmp/
 /dist/
 /build/
+
+node_modules/
