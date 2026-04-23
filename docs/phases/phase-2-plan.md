@@ -5,11 +5,11 @@ per-sub-milestone plans. Shipped sub-milestones are cross-referenced
 out to their frozen shipped docs; live status lives in
 [`../implementation-status.md`](../implementation-status.md).
 
-**Status snapshot:** Phase 2a, 2b.1, 2b.2, and 2b.3 shipped.
-**Next up:** 2b.4 (`apps/web` web client + WASM crypto) — pulled ahead
-of MCP HTTP/SSE so a shareable URL lands sooner. 2b.5
-(`context.propose` + MCP HTTP/SSE + OAuth 2.1 PKCE for agent tokens)
-follows.
+**Status snapshot:** Phase 2a, 2b.1, 2b.2, and 2b.3 shipped;
+2b.4 in flight (2026-04-22 — login, tenant picker, browser unlock,
+read-only docs live; writes + tokens + audit parity remaining).
+**Next up:** finish 2b.4, then 2b.5 (`context.propose` + MCP HTTP/SSE
++ OAuth 2.1 PKCE for agent tokens).
 
 ---
 
@@ -191,26 +191,46 @@ for the route list, decisions, and test coverage. Highlights:
 - FTS on encrypted rows (re-populate `tsv` during write while a key
   is live).
 
-### Phase 2b.4 — Web client (next up)
+### Phase 2b.4 — Web client (in flight, opened 2026-04-22)
 
 Separate app, feature-parity with desktop's remote-workspace mode.
 Pulled ahead of MCP HTTP/SSE (previously 2b.4) so a shareable URL
 lands sooner; depends only on 2b.2's HTTP surface and 2b.3's crypto,
-both shipped.
+both shipped. Detailed status + decisions live in
+[`phase-2b4-web.md`](phase-2b4-web.md).
 
-- **New app:** `apps/web` — Vite + React + Tailwind, mirrors
-  `apps/desktop/src/` components as much as possible.
-- **WASM crypto:** `ourtex-crypto` compiled to wasm32 target for
-  in-browser decryption. Session-key publish happens from the
-  browser once the user unlocks. Add a `wasm` feature that strips
-  `tokio` / `rand::thread_rng()` for the browser build.
-- **Auth:** same opaque session token flow the desktop uses today
-  (`/v1/auth/login` → bearer). No OAuth dependency — OAuth PKCE
-  (2b.5) is for *agent* tokens, not user login.
-- **No stdio MCP** (browser can't spawn processes) — hosted
-  integrations go through the server's HTTP/SSE MCP from 2b.5.
-  Until 2b.5 lands, web users get the same UI as desktop minus any
-  "connect an agent" affordances.
+**Landed 2026-04-22:**
+
+- `apps/web` — Vite + React + Tailwind, sibling to `apps/desktop`.
+- `ourtex-crypto-wasm` — new crate; thin wasm-bindgen wrapper around
+  the four crypto ops the browser needs. `ourtex-crypto` itself now
+  compiles to `wasm32-unknown-unknown` without a feature flag
+  (swapped `rand::thread_rng()` → `OsRng`, target-gated
+  `getrandom[js]`; `tokio` was never a dep in the first place — the
+  earlier plan's "strip tokio" note was wrong).
+- Login / signup against `/v1/auth/*`, tenant picker against
+  `/v1/tenants`, browser unlock that seeds-if-fresh or unwraps-if-
+  seeded, heartbeat republish every 4 min, read-only documents
+  view.
+
+**Still to wire in 2b.4:**
+
+- Writes (`docWrite`, `docDelete`) with base-version-checked editor.
+- Tokens + audit views (parity with desktop).
+- Graph view (optional — decision pending).
+- Session token hardening (move off `localStorage` to an httpOnly
+  cookie issued by login; folds into 2b.5 CSRF work).
+- Onboarding chat — desktop's flow reaches Anthropic via a
+  Tauri-only command; web needs a server-mediated route before it
+  can mirror this. Likely punted to 2c or later.
+
+**Unchanged commitments:**
+
+- Auth: the opaque session token flow desktop uses today. No OAuth
+  dependency — OAuth PKCE (2b.5) is for *agent* tokens.
+- No stdio MCP (browser can't spawn processes). Hosted integrations
+  go through 2b.5's HTTP/SSE MCP. Until then, the web UI just
+  doesn't offer a "connect an agent" affordance.
 
 ### Phase 2b.5 — `context.propose` + MCP HTTP/SSE
 
@@ -251,12 +271,13 @@ Multi-tenant on the same server, plus team semantics.
 
 ## New crates / apps summary
 
-| Name            | Kind  | Phase   | Role                                          |
-| ---             | ---   | ---     | ---                                           |
-| `ourtex-server`  | crate | 2b.1+   | Axum HTTP + Postgres; Docker-packaged         |
-| `ourtex-sync`    | crate | 2b.2    | Client-side `VaultDriver` over HTTPS          |
-| `ourtex-crypto`  | crate | 2b.3    | Session-bound key hierarchy; WASM-compilable  |
-| `apps/web`      | app   | 2b.4    | React web client (parallel to desktop)        |
+| Name                  | Kind  | Phase   | Role                                          |
+| ---                   | ---   | ---     | ---                                           |
+| `ourtex-server`       | crate | 2b.1+   | Axum HTTP + Postgres; Docker-packaged         |
+| `ourtex-sync`         | crate | 2b.2    | Client-side `VaultDriver` over HTTPS          |
+| `ourtex-crypto`       | crate | 2b.3    | Session-bound key hierarchy; WASM-compilable  |
+| `ourtex-crypto-wasm`  | crate | 2b.4    | wasm-bindgen wrapper; browser crypto surface  |
+| `apps/web`            | app   | 2b.4    | React web client (parallel to desktop)        |
 
 Phases 2a and 2c add no new crates — both extend existing ones.
 
@@ -302,5 +323,9 @@ Still open:
   both the Anthropic API key and remote session tokens in plaintext
   in `~/.ourtex/`. Move to OS keychain (`keyring` crate) before any
   distribution build (Phase 3).
+- **Web session token storage.** `apps/web` currently parks the
+  bearer in `localStorage` — XSS-vulnerable. Move to an httpOnly
+  cookie issued by `/v1/auth/login` when 2b.5 reworks the auth
+  surface for OAuth PKCE + CSRF anyway.
 - **Sync cache TTL + SSE fallback.** Start at 5 s TTL + SSE
   invalidation; revisit if SSE proves flaky on hosted infra.

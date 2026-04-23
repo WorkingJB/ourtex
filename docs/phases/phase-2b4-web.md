@@ -1,0 +1,173 @@
+# Phase 2b.4 — Web client + WASM crypto (in flight)
+
+Opened 2026-04-22. Adds `apps/web` (Vite + React + Tailwind) alongside
+`apps/desktop`, plus a browser-facing `ourtex-crypto-wasm` wrapper so
+the unlock flow runs entirely client-side. Pulled ahead of 2b.5
+(MCP HTTP/SSE + OAuth PKCE + `context.propose`) so a shareable URL
+lands sooner; depends only on 2b.2's HTTP surface and 2b.3's crypto,
+both shipped.
+
+Forward-looking plan context in [`phase-2-plan.md`](phase-2-plan.md);
+live status in [`../implementation-status.md`](../implementation-status.md).
+
+---
+
+### `ourtex-crypto` — 2026-04-22 (Phase 2b.4 delta)
+
+No API change. The crate now compiles clean to `wasm32-unknown-unknown`
+without a feature flag:
+
+- `rand::thread_rng()` → `rand::rngs::OsRng` in `kdf.rs`,
+  `content_key.rs`, `aead.rs`. `OsRng` has no thread-local state, so it
+  works on wasm32 where `thread_rng` doesn't.
+- `Cargo.toml` gains a target-gated dep on `getrandom` with the `js`
+  feature, so `OsRng` routes through `crypto.getRandomValues` in the
+  browser.
+
+Argon2id and XChaCha20-Poly1305 are pure-CPU + alloc and need no
+additional gating. Native builds and the 13-test unit suite are
+unchanged.
+
+### `ourtex-crypto-wasm` — 2026-04-22 (new, Phase 2b.4)
+
+Thin wasm-bindgen wrapper. Exists as its own crate rather than a
+feature on `ourtex-crypto` so wasm-bindgen's dependency tree doesn't
+leak into native consumers (`ourtex-server`, `ourtex-sync`, desktop).
+
+**Public API (JS surface, all take/return base64url-nopad strings):**
+
+- `generateSalt() -> string` — fresh 16-byte KDF salt.
+- `generateContentKey() -> string` — fresh 32-byte AEAD key.
+- `wrapContentKey(contentWire, passphrase, saltWire) -> string` —
+  derive master, wrap, return wrapped blob for `init-crypto`.
+- `unwrapContentKey(wrappedWire, passphrase, saltWire) -> string` —
+  derive master, unwrap, return raw content key ready for
+  `/session-key`. Collapses every failure mode into one error.
+
+**Build:** `crate-type = ["cdylib", "rlib"]`; the rlib half lets
+`cargo check --workspace` validate the crate on native hosts without
+the wasm32 target installed. `wasm-pack build --target web` emits an
+ES-module bundle that Vite consumes directly.
+
+**Decisions recorded here:**
+
+- **Separate wrapper crate, not a feature on `ourtex-crypto`.** The
+  core crate stays free of `wasm-bindgen` and its `js-sys` /
+  `wasm-bindgen-macro` toolchain, so server and desktop builds don't
+  pay for machinery they never use. Cost: one extra crate in the
+  tree and a `wasm-pack` build step in `apps/web`.
+- **Four top-level functions, not a stateful class.** The JS side
+  holds the passphrase briefly during a single unlock call, then
+  drops it. A class would accumulate key state in the JS heap —
+  neither more secure (we're inside the browser's process anyway)
+  nor better ergonomically.
+- **`JsError` for every failure.** `CryptoError::Display` is safe to
+  surface (collapsed "decryption failed"); exposing it verbatim keeps
+  the enumeration-resistance posture the Rust crate already has.
+
+### `apps/web` — 2026-04-22 (new, Phase 2b.4)
+
+Sibling to `apps/desktop`. Same toolchain (Vite + React 18 + TS +
+Tailwind), no Tauri — hits `ourtex-server` directly over HTTPS.
+
+**What's wired (2026-04-22):**
+
+- **Login / signup** — `LoginView.tsx` toggles between
+  `POST /v1/auth/login` and `POST /v1/auth/signup`. Session token
+  held in `localStorage` under `ourtex.session.v1`; bearer attached
+  by the shared `request()` helper in `api.ts`.
+- **Tenant picker** — `TenantPicker.tsx` hits `GET /v1/tenants`.
+  Single-membership accounts (default for personal signup) auto-pick
+  and skip the chooser.
+- **Unlock** — `UnlockView.tsx` branches on `vault/crypto.seeded`:
+  fresh tenants get a "set passphrase" form that generates salt +
+  content key in WASM, wraps, and `POST`s `vault/init-crypto`;
+  seeded tenants get an "unlock" form that derives + unwraps
+  locally. Both paths end by `POST`ing `/session-key`.
+- **Heartbeat** — `heartbeat.ts` republishes the content key every
+  4 minutes (1/4 of the server's 15-minute default TTL). Cancelled
+  on tenant switch, sign out, or component unmount.
+- **Documents (read-only)** — `DocumentsView.tsx` renders the list
+  from `GET /v1/t/:tid/vault/docs` and the canonical source from
+  `GET .../docs/:id` on click.
+- **Session lifecycle** — `App.tsx` tri-state: `checking` →
+  `locked` (seeded + no local content key) → `ready`. Sign out and
+  tenant switch both call `DELETE /session-key` on the outgoing
+  tenant before dropping the token.
+- **Dev ergonomics** — Vite proxies `/v1/*` + `/healthz` to
+  `http://localhost:8080` (override via `OURTEX_SERVER_URL`);
+  `predev` and `prebuild` npm hooks run `wasm-pack build` so the
+  WASM blob is always fresh.
+
+**Decisions recorded here:**
+
+- **Session token in `localStorage`, not httpOnly cookie.** Pragmatic
+  first pass — same-origin, survives a reload, one source of truth
+  for the bearer. XSS-vulnerable, so moving to an httpOnly cookie
+  issued by the server is flagged as a 2b.5 follow-up when the auth
+  surface is hardened end-to-end.
+- **Per-tab unlock.** Even if `vault/crypto.unlocked = true` (another
+  client is holding the key), the web client always requires its own
+  local unlock so it has the content key in memory for heartbeat
+  recovery. Cost: extra passphrase prompt in a second tab; benefit:
+  a single predictable state machine in `App.tsx`.
+- **No stdio MCP.** Browsers can't spawn processes. Hosted
+  integrations will go through the server's HTTP/SSE MCP in 2b.5.
+- **Session-key revocation on tenant switch / logout.** Best-effort
+  `DELETE /session-key` before dropping local state. If the request
+  fails the server TTL (15 min) will still clean up; the belt is
+  cheap and avoids a leaked unlock between workspace hops.
+- **wasm-pack output lives under `apps/web/src/wasm/`.** Generated
+  files are gitignored by a wasm-pack-managed `.gitignore` inside
+  that directory. CI / install should run `npm run build:wasm`
+  (which the `predev` / `prebuild` hooks already do) before Vite.
+
+**Bundle footprint (prod build, 2026-04-22):**
+
+- `ourtex_crypto_wasm_bg.wasm` — 82 KB
+- `index.js` — 162 KB (52 KB gzipped)
+- `index.css` — 8 KB (2 KB gzipped)
+
+### Test coverage
+
+No new Rust unit tests this phase — the four WASM-exposed functions
+are thin passthroughs to `ourtex-crypto` which already has 13/13
+passing unit tests covering every code path. `apps/web` has no test
+suite yet; the right time to add React/Vitest tests is when the
+write path lands and starts accumulating non-trivial UI state
+transitions.
+
+### Still open on 2b.4
+
+- **Writes** — `docWrite`, `docDelete` on the web client, with a
+  base-version-checked editor. Wire shape is shipped server-side
+  (`PUT /v1/t/:tid/vault/docs/:doc_id`); UI work only.
+- **Tokens view** — parity with desktop `TokensView.tsx`
+  (issue / revoke). Endpoint list already exists at `/v1/t/:tid/tokens`.
+- **Audit view** — parity with desktop `AuditView.tsx`. Endpoint at
+  `/v1/t/:tid/audit`.
+- **Graph view** — optional; `react-force-graph-2d` transferred
+  directly from desktop works, decision pending on whether a browser
+  UI needs it.
+- **Onboarding chat** — desktop's `OnboardingView.tsx` calls a
+  Tauri-specific Anthropic-key-holding command. The web client
+  needs a server-mediated chat route before it can mirror this;
+  punt to 2c or later.
+- **Session token hardening** — move off `localStorage` to an
+  httpOnly cookie issued by `/v1/auth/login`. Requires CSRF
+  protection on state-changing routes; fold into 2b.5 when the
+  auth surface is reworked for OAuth PKCE anyway.
+- **OS keychain (desktop follow-up, not blocking web).** Still open
+  from 2b.3.
+
+### Cuts already made
+
+- **No `wasm` feature flag on `ourtex-crypto`.** `OsRng` +
+  target-gated `getrandom[js]` covers every wasm requirement
+  without forking the native build path.
+- **No wasm-opt.** `package.metadata.wasm-pack.profile.release`
+  disables it; binary is 82 KB already and wasm-opt adds ~10 s to
+  every build for a ~5 KB win.
+- **No i18n / a11y polish.** Forms are semantic (`<label>` +
+  `<input required>`), but there is no aria-live region for errors
+  and no translation scaffolding. Defer to post-2b.

@@ -18,7 +18,7 @@ use crate::{
     kdf::MasterKey,
 };
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
-use rand::RngCore;
+use rand::{rngs::OsRng, RngCore};
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
 #[derive(Clone, Zeroize, ZeroizeOnDrop)]
@@ -29,7 +29,7 @@ impl ContentKey {
     /// `init-crypto` time.
     pub fn generate() -> Self {
         let mut buf = [0u8; KEY_LEN];
-        rand::thread_rng().fill_bytes(&mut buf);
+        OsRng.fill_bytes(&mut buf);
         Self(buf)
     }
 

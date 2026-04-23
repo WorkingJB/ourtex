@@ -1,0 +1,22 @@
+[package]
+name = "ourtex-crypto-wasm"
+description = "wasm-bindgen surface for ourtex-crypto; consumed by apps/web"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[lib]
+path = "src/lib.rs"
+# cdylib: the `.wasm` module for the browser.
+# rlib:   lets `cargo check --workspace` and doc builds link against us
+#         on native hosts without needing the wasm32 target.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+ourtex-crypto = { workspace = true }
+wasm-bindgen = "0.2"
+
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = false

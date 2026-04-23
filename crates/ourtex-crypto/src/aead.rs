@@ -16,7 +16,7 @@ use chacha20poly1305::{
     aead::{Aead, KeyInit},
     XChaCha20Poly1305, XNonce,
 };
-use rand::RngCore;
+use rand::{rngs::OsRng, RngCore};
 
 pub const NONCE_LEN: usize = 24;
 pub const KEY_LEN: usize = 32;
@@ -51,7 +51,7 @@ impl SealedBlob {
 pub fn seal(plaintext: &[u8], key: &[u8; KEY_LEN]) -> Result<SealedBlob> {
     let cipher = XChaCha20Poly1305::new(key.into());
     let mut nonce_bytes = [0u8; NONCE_LEN];
-    rand::thread_rng().fill_bytes(&mut nonce_bytes);
+    OsRng.fill_bytes(&mut nonce_bytes);
     let nonce = XNonce::from_slice(&nonce_bytes);
     let ct = cipher
         .encrypt(nonce, plaintext)

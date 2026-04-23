@@ -15,12 +15,15 @@ that limit, consolidate scope or break out a sub-phase.
 
 ## Snapshot
 
-**Last updated:** 2026-04-21
+**Last updated:** 2026-04-22
 
-**Toolchain:** Rust 1.95.0 stable (rustup). Workspace at repo root.
+**Toolchain:** Rust 1.95.0 stable (rustup) + Node 20+ for the web /
+desktop frontends. wasm-pack 0.14 drives the browser crypto build.
+Workspace at repo root.
 
 **Test totals:** 148/148 passing with `DATABASE_URL` set; 128/128
-without the DB-required suite.
+without the DB-required suite (Rust only — `apps/web` has no JS test
+suite yet).
 
 **Rebrand 2026-04-21:** product renamed `mytex` → `ourtex`. All
 crates, bundle identifiers, env vars (`MYTEX_*` → `OURTEX_*`), vault
@@ -38,12 +41,22 @@ databases must be rebuilt.
 | `ourtex-desktop`| ✅ 2a + 2b.2 + 2b.3 | 7 | —           | Multi-vault + remote connect + unlock/lock |
 | `ourtex-server` | ✅ Phase 2b.3 | 20   | 20          | Auth + vault + index + tokens + audit + crypto |
 | `ourtex-sync`   | ✅ 2b.2 + 2b.3 | 0   | —           | `RemoteVaultDriver` + crypto control calls |
-| `ourtex-crypto` | ✅ Phase 2b.3 | 13   | —           | Argon2id KDF + XChaCha20-Poly1305 AEAD |
+| `ourtex-crypto` | ✅ 2b.3 + wasm32 | 13 | —           | Argon2id KDF + XChaCha20-Poly1305 AEAD; browser build clean |
+| `ourtex-crypto-wasm` | ✅ 2b.4 | —  | —               | wasm-bindgen surface; 4 ops: generateSalt/ContentKey, wrap/unwrap |
+| `ourtex-web`    | 🚧 2b.4 unlock   | —  | —           | Vite + React + Tailwind; login + tenant picker + unlock + read-only docs |
 
-**Next up:** Phase 2b.4 — `apps/web` web client + WASM crypto. Pulled
-ahead of MCP HTTP/SSE so a shareable URL lands sooner (no OAuth
-dependency; web client uses the same session-token flow desktop uses
-today). See [`phases/phase-2-plan.md`](phases/phase-2-plan.md).
+**In flight:** Phase 2b.4 — `apps/web` web client + WASM crypto.
+Opened 2026-04-22. `ourtex-crypto` builds clean for
+`wasm32-unknown-unknown`; new `ourtex-crypto-wasm` wrapper crate
+exposes four wasm-bindgen functions (generateSalt, generateContentKey,
+wrapContentKey, unwrapContentKey) consumed by `apps/web` via wasm-pack.
+Browser unlock flow wired: `UnlockView` handles both seed-fresh and
+unwrap-seeded paths, publishes the content key, and a 4-minute
+heartbeat keeps the server-side TTL alive. Still to wire: writes
+(`docWrite`, `docDelete`), tokens/audit views, onboarding parity with
+desktop, and hardening the session token off `localStorage`. Details
+in [`phases/phase-2b4-web.md`](phases/phase-2b4-web.md); forward plan
+in [`phases/phase-2-plan.md`](phases/phase-2-plan.md).
 
 ---
 
@@ -63,12 +76,18 @@ today). See [`phases/phase-2-plan.md`](phases/phase-2-plan.md).
   `ourtex-crypto` + session-bound decryption; encrypted
   `body_ciphertext`; desktop unlock/lock + heartbeat.
 
+### In flight
+
+- [`phases/phase-2b4-web.md`](phases/phase-2b4-web.md) — `apps/web` +
+  `ourtex-crypto-wasm`; login, tenant picker, unlock, read-only docs
+  shipped 2026-04-22. Writes / tokens / audit still to wire.
+
 ### Planned
 
 - [`phases/phase-2-plan.md`](phases/phase-2-plan.md) — Phase 2 goals,
-  decisions D7–D17, remaining sub-milestones (2b.4 web client,
-  2b.5 MCP HTTP/OAuth/`context.propose`, 2c teams), scope cuts,
-  open questions.
+  decisions D7–D17, remaining sub-milestones (2b.4 web client in
+  flight, 2b.5 MCP HTTP/OAuth/`context.propose`, 2c teams), scope
+  cuts, open questions.
 - [`phases/phase-3-plan.md`](phases/phase-3-plan.md) — Desktop
   distribution & installers (signed macOS DMG, Windows MSI, Linux,
   auto-updater).
@@ -105,11 +124,15 @@ ourtex/
 │  │  ├─ docker-compose.yml   postgres + server; dev profile
 │  │  └─ .env.example         reference env vars for compose
 │  ├─ ourtex-sync/             ✅ 2b.2 + 2b.3 — RemoteVaultDriver + crypto control
-│  └─ ourtex-crypto/           ✅ Phase 2b.3 — Argon2id KDF + XChaCha20-Poly1305 AEAD
+│  ├─ ourtex-crypto/           ✅ 2b.3 + wasm32 — Argon2id KDF + XChaCha20-Poly1305 AEAD
+│  └─ ourtex-crypto-wasm/      ✅ 2b.4 — wasm-bindgen surface for the browser
 ├─ apps/
-│  └─ desktop/                ✅ Phase 2a
-│     ├─ src-tauri/           Rust (ourtex-desktop crate)
-│     └─ src/                 React + Vite + TS + Tailwind
+│  ├─ desktop/                ✅ Phase 2a
+│  │  ├─ src-tauri/           Rust (ourtex-desktop crate)
+│  │  └─ src/                 React + Vite + TS + Tailwind
+│  └─ web/                    🚧 Phase 2b.4 — in flight
+│     ├─ src/                 React + Vite + TS + Tailwind (no Tauri)
+│     └─ src/wasm/            wasm-pack output (generated, gitignored)
 └─ docs/
    ├─ ARCHITECTURE.md         v1 contract + Phase 2 overview
    ├─ FORMAT.md               vault format spec + Phase 2 planned additions
@@ -122,6 +145,7 @@ ourtex/
       ├─ phase-2b1-server.md
       ├─ phase-2b2-remote-vault.md
       ├─ phase-2b3-encryption.md
+      ├─ phase-2b4-web.md
       ├─ phase-2-plan.md
       └─ phase-3-plan.md
 ```
@@ -176,3 +200,17 @@ npm run tauri dev
 First run shows the vault picker; registers the chosen directory as
 a workspace in `~/.ourtex/workspaces.json`. Subsequent launches
 auto-open the active workspace.
+
+### Running the web app
+
+```bash
+# Requires wasm-pack on PATH (cargo install wasm-pack).
+cd apps/web
+npm install
+npm run dev                  # http://localhost:1430
+```
+
+`predev` and `prebuild` hooks run `wasm-pack build` against
+`ourtex-crypto-wasm` so the WASM module is always fresh. Set
+`OURTEX_SERVER_URL` to override the proxy target
+(default `http://localhost:8080`).

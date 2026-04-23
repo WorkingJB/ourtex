@@ -9,6 +9,7 @@ members = [
     "crates/ourtex-server",
     "crates/ourtex-sync",
     "crates/ourtex-crypto",
+    "crates/ourtex-crypto-wasm",
     "apps/desktop/src-tauri",
 ]
 

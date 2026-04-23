@@ -19,3 +19,9 @@ subtle = { workspace = true }
 zeroize = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true }
+
+# Browser builds: activate getrandom's `js` backend so `OsRng` reaches
+# `crypto.getRandomValues`. `rand 0.8` pulls `getrandom 0.2` transitively;
+# this target-specific dep merges the `js` feature onto the same crate.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { version = "0.2", features = ["js"] }

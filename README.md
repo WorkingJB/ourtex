@@ -44,12 +44,14 @@ are or what the project is about.
 ```
 apps/
   desktop/             Tauri app (React UI + Rust core)
+  web/                 React web client against ourtex-server
 crates/
   ourtex-vault/        VaultDriver trait + PlainFileDriver
   ourtex-index/        SQLite + FTS5 search / graph index
   ourtex-auth/         Scoped opaque-token auth (otx_* secrets)
   ourtex-audit/        Hash-chained append-only audit log
   ourtex-crypto/       Argon2id KDF + XChaCha20-Poly1305 AEAD
+  ourtex-crypto-wasm/  wasm-bindgen surface for the browser
   ourtex-mcp/          MCP server (JSON-RPC stdio + HTTP/SSE)
   ourtex-server/       Cloud control-plane (axum + Postgres)
   ourtex-sync/         Remote vault driver + crypto control calls
@@ -74,6 +76,11 @@ cargo check --workspace
 cd apps/desktop
 npm install
 npm run tauri dev
+
+# Run the web app (requires wasm-pack on PATH)
+cd apps/web
+npm install
+npm run dev            # http://localhost:1430
 
 # Run the cloud server locally (requires Postgres)
 cd crates/ourtex-server

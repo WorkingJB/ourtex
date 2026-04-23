@@ -19,8 +19,12 @@
 //! Scope cuts for this pass (see `docs/implementation-status.md`):
 //!   - one content key per workspace (no per-doc keys)
 //!   - no key rotation / versioning beyond a static `key_version = 1`
-//!   - no WASM support (comes with 2b.5 web client)
 //!   - no OS keychain (master key held in client memory only)
+//!
+//! Browser builds: `cargo build --target wasm32-unknown-unknown` works
+//! out of the box — `OsRng` routes through `getrandom`'s `js` backend
+//! (activated by the wasm32-gated dep in `Cargo.toml`) to reach
+//! `crypto.getRandomValues`. No `wasm` feature flag needed.
 
 #![forbid(unsafe_code)]
 

@@ -53,9 +53,12 @@ session-bound decryption.
   every document's body is sealed under it. Per-doc keys + key
   rotation are future work (touches the `key_version` column already
   present in the schema for exactly this reason).
-- **No WASM feature gate yet.** The crate compiles only on native
-  targets. 2b.4 will add a `wasm` feature that strips `tokio` /
-  `rand::thread_rng()` for a browser build.
+- **WASM support landed in 2b.4 without a feature flag.** Swapped
+  `rand::thread_rng()` for `rand::rngs::OsRng` (no thread-local state)
+  and added a `cfg(target_arch = "wasm32")` dep on `getrandom` with
+  the `js` feature. Argon2 and XChaCha20-Poly1305 are pure-CPU + alloc
+  and need no extra gating. `cargo build -p ourtex-crypto --target
+  wasm32-unknown-unknown` succeeds.
 
 ### `ourtex-server` — 2026-04-19 (Phase 2b.3 delta)
 
