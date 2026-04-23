@@ -4,8 +4,12 @@ import { clearSession, loadSession, StoredSession } from "./session";
 import { LoginView } from "./LoginView";
 import { TenantPicker } from "./TenantPicker";
 import { DocumentsView } from "./DocumentsView";
+import { TokensView } from "./TokensView";
+import { AuditView } from "./AuditView";
 import { UnlockView } from "./UnlockView";
 import { Heartbeat, startHeartbeat } from "./heartbeat";
+
+type View = "documents" | "tokens" | "audit";
 
 // Tri-state: what does this browser hold for the current tenant?
 //   "checking"  — waiting on /vault/crypto
@@ -25,6 +29,13 @@ export default function App() {
     kind: "checking",
   });
   const [heartbeat, setHeartbeatHandle] = useState<Heartbeat | null>(null);
+  const [view, setView] = useState<View>("documents");
+
+  // Hop back to documents when the tenant changes so a "tokens" or
+  // "audit" selection from a previous tenant doesn't stick.
+  useEffect(() => {
+    setView("documents");
+  }, [tenant?.tenant_id]);
 
   // Classify the tenant whenever the caller flips to a new one. Seeded
   // tenants without a local content key land in UnlockView; plaintext
@@ -120,22 +131,75 @@ export default function App() {
           </button>
         </div>
       </header>
-      <main className="flex-1 min-h-0">
-        {workspace.kind === "checking" && (
-          <div className="h-full flex items-center justify-center text-neutral-500">
-            Checking workspace…
-          </div>
+      <div className="flex flex-1 min-h-0">
+        {workspace.kind === "ready" && (
+          <nav className="w-44 border-r border-neutral-200 bg-white p-2 flex flex-col gap-1">
+            <NavBtn
+              label="Documents"
+              active={view === "documents"}
+              onClick={() => setView("documents")}
+            />
+            <NavBtn
+              label="Tokens"
+              active={view === "tokens"}
+              onClick={() => setView("tokens")}
+            />
+            <NavBtn
+              label="Audit"
+              active={view === "audit"}
+              onClick={() => setView("audit")}
+            />
+          </nav>
         )}
-        {workspace.kind === "locked" && (
-          <UnlockView
-            tenant={tenant}
-            onUnlocked={(contentKey) =>
-              setWorkspace({ kind: "ready", contentKey })
-            }
-          />
-        )}
-        {workspace.kind === "ready" && <DocumentsView tenant={tenant} />}
-      </main>
+        <main className="flex-1 min-w-0 bg-neutral-50">
+          {workspace.kind === "checking" && (
+            <div className="h-full flex items-center justify-center text-neutral-500">
+              Checking workspace…
+            </div>
+          )}
+          {workspace.kind === "locked" && (
+            <UnlockView
+              tenant={tenant}
+              onUnlocked={(contentKey) =>
+                setWorkspace({ kind: "ready", contentKey })
+              }
+            />
+          )}
+          {workspace.kind === "ready" && view === "documents" && (
+            <DocumentsView tenant={tenant} />
+          )}
+          {workspace.kind === "ready" && view === "tokens" && (
+            <TokensView tenant={tenant} />
+          )}
+          {workspace.kind === "ready" && view === "audit" && (
+            <AuditView tenant={tenant} />
+          )}
+        </main>
+      </div>
     </div>
+  );
+}
+
+function NavBtn({
+  label,
+  active,
+  onClick,
+}: {
+  label: string;
+  active: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={
+        "text-left px-3 py-2 rounded-md text-sm transition " +
+        (active
+          ? "bg-brand-50 text-brand-700 font-medium"
+          : "text-neutral-700 hover:bg-neutral-100")
+      }
+    >
+      {label}
+    </button>
   );
 }

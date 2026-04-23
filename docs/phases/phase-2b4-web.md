@@ -137,15 +137,69 @@ suite yet; the right time to add React/Vitest tests is when the
 write path lands and starts accumulating non-trivial UI state
 transitions.
 
+### Writes — 2026-04-22
+
+Web client now has create / edit / delete parity with desktop for the
+doc list. `DocumentsView.tsx` drops the read-only `<pre>` rendering and
+gains a `DocEditor` panel modelled on desktop's, plus a "+ New" entry
+on the doc list. New helpers:
+
+- `src/docSource.ts` — `buildSource` dumps the form state to YAML
+  frontmatter + body, `parseSource` reads the server's canonical
+  response back into structured fields. Uses `js-yaml` (~15 KB
+  gzipped).
+- `api.docWrite` — `PUT /v1/t/:tid/vault/docs/:doc_id` with the
+  canonical source. Sends `base_version` on existing docs for
+  optimistic concurrency; omits it on creates.
+- `api.docDelete` — `DELETE /v1/t/:tid/vault/docs/:doc_id` with
+  `?base_version=` as a precondition.
+
+The editor is keyed by `${id}@${version}` so a successful save remounts
+it with the post-save version stamp — same pattern desktop uses.
+
+**Server note:** the PUT handler re-parses + re-canonicalizes via
+`ourtex_vault::Document`, so `buildSource`'s YAML doesn't have to be
+byte-exact canonical form. It only needs to round-trip the frontmatter
+fields — which the node-side `buildSource` → `parseSource` smoke test
+confirms.
+
+Bundle footprint after `js-yaml`:
+
+- `index.js` — 210 KB (68 KB gzipped)
+- `index.css` — 11 KB (3 KB gzipped)
+- `ourtex_crypto_wasm_bg.wasm` — 82 KB
+
+### Tokens + audit views — 2026-04-22
+
+Web client gets parity with desktop for the admin surfaces:
+
+- `TokensView.tsx` — table of `/v1/t/:tid/tokens`; issue form
+  (label, TTL days, scope checkboxes) → `POST`; one-time secret
+  reveal with clipboard copy; revoke → `DELETE`. Mirrors desktop's
+  `TokensView.tsx` but the server's `PublicToken` shape uses
+  `last_used_at` / `revoked_at` (nullable timestamps) instead of
+  desktop's `last_used` / `revoked: boolean`, so the component reads
+  those fields directly.
+- `AuditView.tsx` — table of `/v1/t/:tid/audit`. Server returns
+  `entries[]` + `head_hash`; the header chip shows the first 12 chars
+  of the head hash rather than desktop's `chain_valid`. Client-side
+  rehashing would have to mirror the server's exact serde JSON
+  encoding, which is brittle; a proper verify endpoint (or a wasm
+  helper that uses the same `sha2` + serde_json wire shape) is a
+  later-phase task.
+- `App.tsx` gets a left-nav (Documents / Tokens / Audit) rendered
+  only in the `ready` workspace state. Lock/checking states still
+  take the full pane. View selection resets to Documents on tenant
+  switch.
+
+Bundle footprint after these views:
+
+- `index.js` — 220 KB (70 KB gzipped)
+- `index.css` — 13 KB (3 KB gzipped)
+- `ourtex_crypto_wasm_bg.wasm` — 82 KB
+
 ### Still open on 2b.4
 
-- **Writes** — `docWrite`, `docDelete` on the web client, with a
-  base-version-checked editor. Wire shape is shipped server-side
-  (`PUT /v1/t/:tid/vault/docs/:doc_id`); UI work only.
-- **Tokens view** — parity with desktop `TokensView.tsx`
-  (issue / revoke). Endpoint list already exists at `/v1/t/:tid/tokens`.
-- **Audit view** — parity with desktop `AuditView.tsx`. Endpoint at
-  `/v1/t/:tid/audit`.
 - **Graph view** — optional; `react-force-graph-2d` transferred
   directly from desktop works, decision pending on whether a browser
   UI needs it.

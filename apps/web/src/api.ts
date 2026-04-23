@@ -96,6 +96,74 @@ export type DocResponse = {
   source: string;
 };
 
+export type WriteResponse = {
+  doc_id: string;
+  type_: string;
+  visibility: string;
+  version: string;
+  updated_at: string;
+};
+
+export const VISIBILITIES = ["public", "work", "personal", "private"] as const;
+
+export const SEED_TYPES = [
+  "identity",
+  "roles",
+  "goals",
+  "relationships",
+  "memories",
+  "tools",
+  "preferences",
+  "domains",
+  "decisions",
+] as const;
+
+// ---------- Tokens ----------
+
+export type PublicToken = {
+  id: string;
+  label: string;
+  scope: string[];
+  mode: string; // "read" | "read_propose"
+  max_docs: number;
+  max_bytes: number;
+  created_at: string;
+  expires_at: string;
+  last_used_at: string | null;
+  revoked_at: string | null;
+};
+
+export type IssueTokenRequest = {
+  label: string;
+  scope: string[];
+  mode?: "read" | "read_propose";
+  ttl_days?: number | null;
+};
+
+export type IssueTokenResponse = {
+  secret: string;
+  token: PublicToken;
+};
+
+// ---------- Audit ----------
+
+export type AuditRow = {
+  seq: number;
+  ts: string;
+  actor: string;
+  action: string;
+  document_id: string | null;
+  scope_used: string[];
+  outcome: string;
+  prev_hash: string;
+  hash: string;
+};
+
+export type AuditResponse = {
+  entries: AuditRow[];
+  head_hash: string | null;
+};
+
 // ---------- Crypto state ----------
 
 export type CryptoState = {
@@ -136,6 +204,46 @@ export const api = {
       "GET",
       `/v1/t/${tenantId}/vault/docs/${encodeURIComponent(docId)}`
     ),
+  docWrite: (
+    tenantId: string,
+    docId: string,
+    source: string,
+    baseVersion: string | null
+  ) =>
+    request<WriteResponse>(
+      "PUT",
+      `/v1/t/${tenantId}/vault/docs/${encodeURIComponent(docId)}`,
+      baseVersion === null ? { source } : { source, base_version: baseVersion }
+    ),
+  docDelete: (tenantId: string, docId: string, baseVersion: string | null) => {
+    const q = baseVersion
+      ? `?base_version=${encodeURIComponent(baseVersion)}`
+      : "";
+    return request<void>(
+      "DELETE",
+      `/v1/t/${tenantId}/vault/docs/${encodeURIComponent(docId)}${q}`
+    );
+  },
+
+  tokenList: (tenantId: string) =>
+    request<{ tokens: PublicToken[] }>("GET", `/v1/t/${tenantId}/tokens`),
+  tokenIssue: (tenantId: string, input: IssueTokenRequest) =>
+    request<IssueTokenResponse>("POST", `/v1/t/${tenantId}/tokens`, input),
+  tokenRevoke: (tenantId: string, tokenId: string) =>
+    request<void>(
+      "DELETE",
+      `/v1/t/${tenantId}/tokens/${encodeURIComponent(tokenId)}`
+    ),
+
+  auditList: (tenantId: string, limit = 500, after?: number) => {
+    const params = new URLSearchParams();
+    params.set("limit", String(limit));
+    if (after !== undefined) params.set("after", String(after));
+    return request<AuditResponse>(
+      "GET",
+      `/v1/t/${tenantId}/audit?${params.toString()}`
+    );
+  },
 
   cryptoState: (tenantId: string) =>
     request<CryptoState>("GET", `/v1/t/${tenantId}/vault/crypto`),

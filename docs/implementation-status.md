@@ -52,7 +52,7 @@ task aggregation + agent orchestration. Plan detail in
 | `ourtex-sync`   | ✅ 2b.2 + 2b.3 | 0   | —           | `RemoteVaultDriver` + crypto control calls |
 | `ourtex-crypto` | ✅ 2b.3 + wasm32 | 13 | —           | Argon2id KDF + XChaCha20-Poly1305 AEAD; browser build clean |
 | `ourtex-crypto-wasm` | ✅ 2b.4 | —  | —               | wasm-bindgen surface; 4 ops: generateSalt/ContentKey, wrap/unwrap |
-| `ourtex-web`    | 🚧 2b.4 unlock   | —  | —           | Vite + React + Tailwind; login + tenant picker + unlock + read-only docs |
+| `ourtex-web`    | 🚧 2b.4 admin    | —  | —           | Vite + React + Tailwind; login + tenant picker + unlock + doc CRUD + tokens + audit |
 
 **In flight:** Phase 2b.4 — `apps/web` web client + WASM crypto.
 Opened 2026-04-22. `ourtex-crypto` builds clean for
@@ -61,10 +61,15 @@ exposes four wasm-bindgen functions (generateSalt, generateContentKey,
 wrapContentKey, unwrapContentKey) consumed by `apps/web` via wasm-pack.
 Browser unlock flow wired: `UnlockView` handles both seed-fresh and
 unwrap-seeded paths, publishes the content key, and a 4-minute
-heartbeat keeps the server-side TTL alive. Still to wire: writes
-(`docWrite`, `docDelete`), tokens/audit views, onboarding parity with
-desktop, and hardening the session token off `localStorage`. Details
-in [`phases/phase-2b4-web.md`](phases/phase-2b4-web.md); forward plan
+heartbeat keeps the server-side TTL alive. Doc create / edit / delete
+landed 2026-04-22 with a `buildSource` + `parseSource` YAML helper
+(`js-yaml`) and base-version-checked writes. Tokens + audit views
+landed the same day with a Documents / Tokens / Audit left-nav; the
+audit view surfaces the server's head hash (no client-side chain
+rehash — brittle against serde JSON ordering). Still to wire:
+onboarding parity with desktop and hardening the session token off
+`localStorage`. Details in
+[`phases/phase-2b4-web.md`](phases/phase-2b4-web.md); forward plan
 in [`phases/phase-2-plan.md`](phases/phase-2-plan.md).
 
 ---
