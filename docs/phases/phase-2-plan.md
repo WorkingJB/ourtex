@@ -322,7 +322,8 @@ Still open:
 - **Keychain story for session tokens.** Today the desktop stores
   both the Anthropic API key and remote session tokens in plaintext
   in `~/.ourtex/`. Move to OS keychain (`keyring` crate) before any
-  distribution build (Phase 3).
+  distribution build (Phase 4 — renumbered from Phase 3 on 2026-04-22
+  when Phase 3 absorbed the orchext rebrand + capability expansion).
 - **Web session token storage.** `apps/web` currently parks the
   bearer in `localStorage` — XSS-vulnerable. Move to an httpOnly
   cookie issued by `/v1/auth/login` when 2b.5 reworks the auth

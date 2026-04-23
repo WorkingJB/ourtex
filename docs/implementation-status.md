@@ -31,6 +31,15 @@ directory (`.mytex` → `.ourtex`), and token prefix (`mtx_` → `otx_`)
 renamed in place. No backwards-compat shims — existing installs and
 databases must be rebuilt.
 
+**Rebrand planned 2026-04-22 (executes in Phase 3a):** product will
+rename `ourtex` → `orchext` (orchestration + context) once Phase
+2b.4 wraps. Same playbook: `OURTEX_*` → `ORCHEXT_*`, `.ourtex` →
+`.orchext`, `otx_*` → `ocx_*`, GitHub org/repo rename. Executes as
+the kickoff of Phase 3a alongside the `type: task` / `type: skill`
+seed types, because Phase 3 also absorbs the scope expansion into
+task aggregation + agent orchestration. Plan detail in
+[`phases/phase-3a-rebrand-tasks.md`](phases/phase-3a-rebrand-tasks.md).
+
 | Crate          | Status        | Unit | Integration | Notes                                  |
 |----------------|---------------|-----:|------------:|----------------------------------------|
 | `ourtex-vault`  | ✅ shipped     | 12   | 6           | Format parser + `PlainFileDriver`      |
@@ -88,9 +97,27 @@ in [`phases/phase-2-plan.md`](phases/phase-2-plan.md).
   decisions D7–D17, remaining sub-milestones (2b.4 web client in
   flight, 2b.5 MCP HTTP/OAuth/`context.propose`, 2c teams), scope
   cuts, open questions.
-- [`phases/phase-3-plan.md`](phases/phase-3-plan.md) — Desktop
-  distribution & installers (signed macOS DMG, Windows MSI, Linux,
-  auto-updater).
+- [`phases/phase-3a-rebrand-tasks.md`](phases/phase-3a-rebrand-tasks.md) —
+  Rebrand `ourtex` → `orchext` + vault-native `type: task` and
+  `type: skill` seed types (FORMAT v0.2). Kicks off Phase 3.
+- [`phases/phase-3b-integrations.md`](phases/phase-3b-integrations.md) —
+  First external task integration (Todoist) + visibility-driven
+  storage tier (`task_projection`) + server-held integration
+  credentials. Introduces decisions D18, D22–D26.
+- [`phases/phase-3c-task-expansion.md`](phases/phase-3c-task-expansion.md) —
+  Linear / Jira / Asana / MS To Do adapters + team-inbox aggregation
+  (depends on Phase 2c teams). Decisions D27–D30.
+- [`phases/phase-3d-agent-observer.md`](phases/phase-3d-agent-observer.md) —
+  Agent sessions observer-only: `orchext-agents` crate, heartbeat
+  protocol, client-encrypted transcripts, activity panes. Decisions
+  D31–D35.
+- [`phases/phase-3e-orchestration.md`](phases/phase-3e-orchestration.md) —
+  Full orchestration surface: atomic task checkout, HITL approval
+  gates, runtime skill injection, shared team agents, goal
+  ancestry. Decisions D36–D42.
+- [`phases/phase-4-installers.md`](phases/phase-4-installers.md) —
+  Desktop distribution & installers (signed macOS DMG, Windows MSI,
+  Linux, auto-updater). Renumbered from Phase 3 on 2026-04-22.
 
 ---
 
@@ -101,7 +128,8 @@ in [`phases/phase-2-plan.md`](phases/phase-2-plan.md).
 - `context.propose` write-back flow — planned for Phase 2b.5.
 - HTTP API — shipped, see
   [`phases/phase-2b2-remote-vault.md`](phases/phase-2b2-remote-vault.md).
-- Desktop installers / signed builds — planned for Phase 3.
+- Desktop installers / signed builds — planned for Phase 4
+  (formerly Phase 3; renumbered 2026-04-22).
 
 ---
 
@@ -147,7 +175,12 @@ ourtex/
       ├─ phase-2b3-encryption.md
       ├─ phase-2b4-web.md
       ├─ phase-2-plan.md
-      └─ phase-3-plan.md
+      ├─ phase-3a-rebrand-tasks.md
+      ├─ phase-3b-integrations.md
+      ├─ phase-3c-task-expansion.md
+      ├─ phase-3d-agent-observer.md
+      ├─ phase-3e-orchestration.md
+      └─ phase-4-installers.md
 ```
 
 ---
