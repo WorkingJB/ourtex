@@ -16,6 +16,7 @@ pub mod crypto_api;
 pub mod documents;
 pub mod error;
 pub mod idx;
+pub mod mcp;
 pub mod oauth;
 pub mod password;
 pub mod session_keys;
@@ -122,6 +123,7 @@ pub fn router(state: AppState) -> Router {
         .route("/healthz", get(healthz))
         .nest("/v1/auth", auth::router(state.clone()))
         .nest("/v1/oauth", oauth_routes)
+        .nest("/v1/mcp", mcp::router())
         .nest("/v1", tenants_route)
         .nest("/v1/t/:tid", tenant_routes)
         .with_state(state)

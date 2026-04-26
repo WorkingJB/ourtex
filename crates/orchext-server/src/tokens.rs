@@ -31,9 +31,9 @@ pub fn router() -> Router<AppState> {
         .route("/tokens/:token_id", router_delete(revoke_token))
 }
 
-const TOKEN_PREFIX: &str = "ocx_";
+pub(crate) const TOKEN_PREFIX: &str = "ocx_";
 const TOKEN_BYTES: usize = 32;
-const PREFIX_LOOKUP_LEN: usize = TOKEN_PREFIX.len() + 8;
+pub(crate) const PREFIX_LOOKUP_LEN: usize = TOKEN_PREFIX.len() + 8;
 const DEFAULT_TTL_DAYS: i64 = 90;
 const MAX_TTL_DAYS: i64 = 365;
 

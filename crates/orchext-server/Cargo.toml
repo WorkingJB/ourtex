@@ -37,6 +37,8 @@ sha2 = { workspace = true }
 hex = { workspace = true }
 orchext-vault = { workspace = true }
 orchext-crypto = { workspace = true }
+orchext-mcp = { workspace = true }
+serde_yml = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

@@ -55,6 +55,7 @@ orchext-auth = { path = "crates/orchext-auth", version = "0.1.0" }
 orchext-audit = { path = "crates/orchext-audit", version = "0.1.0" }
 orchext-sync = { path = "crates/orchext-sync", version = "0.1.0" }
 orchext-crypto = { path = "crates/orchext-crypto", version = "0.1.0" }
+orchext-mcp = { path = "crates/orchext-mcp", version = "0.1.0" }
 
 [profile.release]
 lto = "thin"
