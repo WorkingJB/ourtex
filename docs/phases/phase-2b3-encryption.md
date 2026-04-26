@@ -11,6 +11,7 @@ XChaCha20-Poly1305 AEAD); server gains `/vault/crypto`,
 ---
 
 ### `orchext-crypto` — 2026-04-19 (new, Phase 2b.3)
+*([Notion: encryption at rest](https://www.notion.so/34b47fdae49a80adb0fac091491f0d60))*
 
 Passphrase KDF + AEAD primitives. Intentionally minimal — the crate
 exposes only what the client/server need to cooperate on
@@ -61,6 +62,7 @@ session-bound decryption.
   wasm32-unknown-unknown` succeeds.
 
 ### `orchext-server` — 2026-04-19 (Phase 2b.3 delta)
+*([Notion: server session-key management + endpoints](https://www.notion.so/34b47fdae49a80fabe34da9df833c33e))*
 
 Adds at-rest encryption to the vault endpoints, server-side
 session-key store, and four new control-plane routes. Encryption is
@@ -166,6 +168,7 @@ based on whether the session key is live.
 New workspace dep: `orchext-crypto`.
 
 ### `orchext-desktop` — 2026-04-19 (Phase 2b.3 delta)
+*([Notion: desktop unlock/lock + 4-min heartbeat](https://www.notion.so/34b47fdae49a808988f3f14d8b846e9a))*
 
 Unlock / lock flow for remote workspaces.
 

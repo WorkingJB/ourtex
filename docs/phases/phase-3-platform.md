@@ -83,6 +83,7 @@ this earns its keep beyond onboarding.
 ## Deliverables
 
 ### Teams + invites
+*(Notion: [Team workspaces + memberships](https://www.notion.so/34b47fdae49a80a09100d7e9ec10afe8) · [Seed `org/` type + visibility](https://www.notion.so/34b47fdae49a80f3aa60c780298ebe07) · [Team management UI](https://www.notion.so/34b47fdae49a8033bec2e5f0a2eeaf33))*
 
 - **Server**
   - `POST /v1/tenants` — create a team workspace (caller becomes
@@ -110,6 +111,7 @@ this earns its keep beyond onboarding.
   `TenantContext::is_admin`), `apps/desktop`, `apps/web`.
 
 ### Web onboarding chat
+*([Notion](https://www.notion.so/34d47fdae49a81d6a012e90cbbcb0d0b))*
 
 - **Server**
   - `POST /v1/onboarding/chat` — proxy a turn to Anthropic;
@@ -122,6 +124,7 @@ this earns its keep beyond onboarding.
     empty) → Documents` post-login state machine.
 
 ### OS keychain
+*([Notion](https://www.notion.so/34d47fdae49a819c8ce9dd6511989596))*
 
 - **Desktop** (`orchext-desktop` crate)
   - Replace `~/.orchext/anthropic_key` plaintext with `keyring`

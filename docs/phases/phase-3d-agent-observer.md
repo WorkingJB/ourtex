@@ -85,6 +85,7 @@ budget limits use `cost_cents`; audit / chargeback uses raw.
   `claude-code` CLI, parses its JSONL stream). External-pull and
   HTTP-webhook families have trait impls but no concrete provider
   in 3d beyond a generic webhook receiver.
+  *(Notion: [orchext-agents crate + trait](https://www.notion.so/34d47fdae49a81d4bdd4d941d0d974fa) · [Claude Code local adapter](https://www.notion.so/34d47fdae49a819baa8ff7668383d52a))*
 - Migration `0005_agents.sql`:
   - `agent_sessions (id, tenant_id, adapter_family, adapter_id,
      started_at, ended_at nullable, status, goal_text, shared,
@@ -94,24 +95,20 @@ budget limits use `cost_cents`; audit / chargeback uses raw.
   - `agent_events (session_id, at, kind, payload jsonb)` —
      everything that isn't a heartbeat (tool call, error, ask-user,
      blocked).
-- `orchext-server` new routes:
-  - `POST /v1/t/:tid/agents/sessions` — start a session.
-  - `POST /v1/t/:tid/agents/sessions/:id/end` — finalize.
-  - `GET  /v1/t/:tid/agents/sessions` — list live + historical.
-  - `GET  /v1/t/:tid/agents/sessions/:id` — detail incl.
-     (decrypted, if key live) transcript.
-  - `GET  /v1/t/:tid/agents/sessions/:id/events?after=cursor` —
-     live SSE channel for the activity pane.
-  - `POST /v1/t/:tid/agents/webhook/:id` — inbound HTTP-webhook
-     heartbeat endpoint.
-- `orchext-mcp` extended: `agent_heartbeat`, `agent_status`,
-  `agent_event` (ask-user, blocked, tool-call-logged).
-- `orchext-audit` integration: every heartbeat + event appended to
-  the existing audit chain (no new audit crate; reuses the existing
-  JSONL hash chain).
-- Desktop **Activity** pane: live list of sessions across all
-  workspaces, expandable rows with recent events; SSE-fed.
-- Web **Activity** pane: parity with desktop.
+  *([Notion](https://www.notion.so/34d47fdae49a8173b814cf78f7acce37))*
+- `orchext-server` new routes (sessions, end, list, detail, SSE,
+  webhook receiver) and `orchext-mcp` extended with
+  `agent_heartbeat`, `agent_status`, `agent_event`. Heartbeat
+  events appended to `orchext-audit`'s existing hash chain.
+  *([Notion](https://www.notion.so/34d47fdae49a81c68b0cd656981f27a9))*
+- Transcript ciphertext stored client-encrypted on
+  `agent_sessions.agent_session_ciphertext` (D33).
+  *([Notion](https://www.notion.so/34d47fdae49a8152b061eeb25afff98a))*
+- Cost ledger + normalization (provider-native + `cost_cents`).
+  *([Notion](https://www.notion.so/34d47fdae49a8171ba6cd316afb62753))*
+- Desktop + Web **Activity** pane: live list of sessions across
+  all workspaces, expandable rows with recent events; SSE-fed.
+  *([Notion](https://www.notion.so/34d47fdae49a81a0a466f0995a7e20f6))*
 - **Summary-promote** flow: end a session → UI prompts "save what
   was learned?" → user edits a draft summary → writes a vault doc
   with `type: memory` (defaults) or `type: decision`, linking

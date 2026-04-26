@@ -21,6 +21,7 @@ Live status in [`../implementation-status.md`](../implementation-status.md).
 ## Sub-milestones, each independently useful
 
 ### 4.1 — macOS signed + notarized DMG via CI
+*([Notion](https://www.notion.so/34d47fdae49a81ac90a2e402e46dda59))*
 
 - **Apple Developer Program enrollment** ($99/year) — manual,
   out-of-CI prerequisite. Creates the team ID used below.
@@ -59,6 +60,7 @@ Live status in [`../implementation-status.md`](../implementation-status.md).
   target if anyone asks.
 
 ### 4.2 — Windows signed MSI
+*([Notion](https://www.notion.so/34d47fdae49a8156870fcccef4cbb2ae))*
 
 - **Code signing cert** — SSL.com / DigiCert / Certum (~$100–400/yr
   for EV or OV) or **Azure Trusted Signing** (pay-per-use, no
@@ -73,6 +75,7 @@ Live status in [`../implementation-status.md`](../implementation-status.md).
   will see "unrecognized app" warnings until install volume builds.
 
 ### 4.3 — Linux AppImage + `.deb`
+*([Notion](https://www.notion.so/34d47fdae49a811393f1eaa509d25d45))*
 
 - `ubuntu-22.04` runner job that produces both artifacts via
   `cargo tauri build`.
@@ -82,6 +85,7 @@ Live status in [`../implementation-status.md`](../implementation-status.md).
   download from Releases only.
 
 ### 4.4 — Auto-updater
+*([Notion](https://www.notion.so/34d47fdae49a8171b5e6e1dec05fee4b))*
 
 - Tauri `updater` plugin pointed at a signed JSON manifest.
 - **Manifest hosting:** GitHub Releases raw asset URL works for
@@ -96,6 +100,7 @@ Live status in [`../implementation-status.md`](../implementation-status.md).
   auto-update — users can't roll back themselves.
 
 ### 4.5 — Download landing page (optional)
+*([Notion](https://www.notion.so/34d47fdae49a81f89104fe82a3890b46))*
 
 - Static page (e.g., `orchext.app/download`) with OS-detection and
   a "Download for macOS/Windows/Linux" button pointing at the

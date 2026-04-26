@@ -9,6 +9,7 @@ MCP HTTP depend on it. Forward-looking plan context in
 ---
 
 ### `orchext-server` — 2026-04-19 (Phase 2b.1)
+*([Notion: server skeleton + auth](https://www.notion.so/34b47fdae49a80d7a07aca2c31db3cba))*
 
 Axum HTTP server, Postgres-backed account + session store. Proves the
 deployment shape (Docker, Postgres, migrations) before vault endpoints,

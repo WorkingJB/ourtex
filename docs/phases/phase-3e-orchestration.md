@@ -81,6 +81,7 @@ table (2c). Not a new role.
 ## Sub-milestones
 
 ### Phase 3e.1 — Orchestrator crate + atomic checkout + goal ancestry
+*(Notion: [orchestrator crate + checkout](https://www.notion.so/34d47fdae49a818abb69d3f52f6a2a3d) · [goal ancestry traversal](https://www.notion.so/34d47fdae49a81b48113e6d85ab5c4ea) · [claimed-task label push-back](https://www.notion.so/34d47fdae49a811995f5f1c28bceb2b1))*
 
 Lands the foundation. Agents can claim tasks, see the why, report
 done. No approvals yet.
@@ -102,6 +103,7 @@ done. No approvals yet.
   (via 3c.2's `push_status`) where the API permits.
 
 ### Phase 3e.2 — HITL approvals + runtime skill injection
+*(Notion: [HITL approvals via context.propose](https://www.notion.so/34d47fdae49a8104aa50dbb69b0d458b) · [Approvals queue UI](https://www.notion.so/34d47fdae49a817b8c66fa97a3a7ad9f) · [skill injection at session start](https://www.notion.so/34d47fdae49a81c69d1cc8d72149b209) · [MCP skill_list tool](https://www.notion.so/34d47fdae49a81938f7cc5e15adb6816))*
 
 The human-in-the-loop surface + skills actually flowing into
 agents.
@@ -124,6 +126,7 @@ agents.
   implicit; this tool is for the user to verify what's in-context.
 
 ### Phase 3e.3 — Shared agents + team observer + team session key
+*(Notion: [Shared agent sessions](https://www.notion.so/34d47fdae49a81c9afbee67244881eb1) · [Team session key keychain slot](https://www.notion.so/34d47fdae49a81919048d52fecd383b6) · [orchestrator:manage scope](https://www.notion.so/34d47fdae49a81368f2af140cd9141aa) · [Board oversight view](https://www.notion.so/34d47fdae49a81b8a1f0c7ed7a0f8400))*
 
 The team story. Depends on 3e.2's HITL surface and Phase 2c
 teams.

@@ -84,6 +84,7 @@ playbook. Old installs rebuild. No `orchext migrate` helper.
 | Docs | every `orchext` / `Orchext` reference | `orchext` / `Orchext` |
 
 ## FORMAT v0.2 additions
+*([Notion](https://www.notion.so/34d47fdae49a812aa86cd06ccd5994de))*
 
 Brief — full spec in [`../FORMAT.md`](../FORMAT.md) (to be updated
 alongside this phase).
@@ -133,21 +134,28 @@ Placeholder for 3d's agent registry. Same reason: one FORMAT bump.
 ## Deliverables
 
 - Every tracked crate, app, doc, config, and disk constant renamed.
+  *([Notion](https://www.notion.so/34d47fdae49a811fb29af81c1e4e503a))*
 - `orchext-tasks` new crate: pure domain (`Task`, `TaskStatus`,
   `Goal`, parsers/serializers `markdown ↔ struct`). No I/O.
   Consumed by `orchext-vault` and `orchext-index`.
+  *([Notion](https://www.notion.so/34d47fdae49a8197bf6aee1abc7f6b42))*
 - `orchext-vault` extended: seed-type enum includes `task`, `skill`,
   `integration`, `agent`; visibility evaluator unchanged.
+  *([Notion](https://www.notion.so/34d47fdae49a816daa7ce593c1156a83))*
 - `orchext-index` extended: new views `active_tasks_by_goal`,
   `skills_by_runtime` (backed by FTS).
+  *([Notion](https://www.notion.so/34d47fdae49a81209ef3c925818eb982))*
 - `orchext-mcp` extended: `task_list(status?, due_before?)`,
   `task_get(id)`, `skill_get(name, runtime?)` tools. Read-only;
   scope-gated by the existing evaluator.
+  *([Notion](https://www.notion.so/34d47fdae49a818ab89be2b10c2c8245))*
 - Desktop: **Tasks** pane (sortable list by status / due / priority;
   click opens the underlying doc in the existing editor) and
   **Skills** pane (read-only list for now).
+  *(Notion: [Tasks pane](https://www.notion.so/34d47fdae49a81ed80e3de9472e96e5f) · [Skills pane](https://www.notion.so/34d47fdae49a8131a033dfd0eae46506))*
 - Web: **Tasks** pane parity with desktop. Skills pane deferred to
   3a.1 follow-up if time is tight.
+  *([Notion](https://www.notion.so/34d47fdae49a81ed80e3de9472e96e5f))*
 
 ## Execution order
 

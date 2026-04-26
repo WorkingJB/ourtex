@@ -10,6 +10,7 @@ rest (encryption retrofits in 2b.3). Forward-looking plan context in
 ---
 
 ### `orchext-server` — 2026-04-19 (Phase 2b.2 delta)
+*([Notion: tenant-scoped vault + index endpoints](https://www.notion.so/34b47fdae49a8007b10ecec54458f25e))*
 
 Extends the 2b.1 surface with vault + index + tokens + audit endpoints
 scoped to a tenant, plus a `/v1/tenants` membership listing. Still
@@ -126,6 +127,7 @@ scope + mode + limits).
   returns 404.
 
 ### `orchext-sync` — 2026-04-19 (new, Phase 2b.2)
+*([Notion: remote vault sync client](https://www.notion.so/34b47fdae49a8054bd86c7de49c7dd7e))*
 
 Client-side library that turns a running `orchext-server` into a
 `VaultDriver` the existing local stack can use unchanged. Every caller
@@ -177,6 +179,7 @@ changes downstream.
 lets `orchext-sync` share them.
 
 ### `orchext-desktop` — 2026-04-19 (Phase 2b.2 delta)
+*([Notion: desktop remote workspace registration](https://www.notion.so/34d47fdae49a81718f80f6a184b3c3fc))*
 
 Opens remote workspaces in the same UI shell as local ones. First-run
 users still get "Add workspace…" for local; a new `workspace_connect_remote`

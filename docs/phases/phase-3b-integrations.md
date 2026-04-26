@@ -85,6 +85,7 @@ decrypts).
 ## Sub-milestones
 
 ### Phase 3b.1 — Visibility trust-tier + projection (server-only)
+*(Notion: [SECURITY.md carve-outs](https://www.notion.so/34d47fdae49a81ffa240dd96098a0b08) · [task_projection storage tier](https://www.notion.so/34d47fdae49a8160b910d8da2c5101e5) · [visibility flipping + strip](https://www.notion.so/34d47fdae49a815083a4f99501186ee2) · [GET /tasks endpoint](https://www.notion.so/34d47fdae49a81d29c14c35c9c5f337c))*
 
 Lands the tier infrastructure with **no external sync**. User-
 authored tasks (from 3a) start flowing into the projection
@@ -131,6 +132,7 @@ immediately, giving the server its first aggregation surface.
   inserter; no backfill).
 
 ### Phase 3b.2 — Todoist adapter + OAuth + promote-to-vault
+*(Notion: [orchext-integrations crate + trait](https://www.notion.so/34d47fdae49a81779ee4c1a5d23f15cf) · [Todoist OAuth + integration](https://www.notion.so/34d47fdae49a81ae9be4d49aeee15ec2) · [external_task_cache + sync worker](https://www.notion.so/34d47fdae49a81e4a2e0c7133f73d1dc) · [incoming tray UI](https://www.notion.so/34d47fdae49a81138124fdfa0a781adf) · [promote-to-vault flow](https://www.notion.so/34d47fdae49a81709855ea142dbf1178))*
 
 First concrete integration. Rides on 3b.1's projection infrastructure.
 

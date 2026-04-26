@@ -29,6 +29,7 @@ additional gating. Native builds and the 13-test unit suite are
 unchanged.
 
 ### `orchext-crypto-wasm` — 2026-04-22 (new, Phase 2b.4)
+*([Notion: WASM crypto wrapper](https://www.notion.so/34d47fdae49a810f8e65f18bb9667e21))*
 
 Thin wasm-bindgen wrapper. Exists as its own crate rather than a
 feature on `orchext-crypto` so wasm-bindgen's dependency tree doesn't
@@ -66,6 +67,7 @@ ES-module bundle that Vite consumes directly.
   the enumeration-resistance posture the Rust crate already has.
 
 ### `apps/web` — 2026-04-22 (new, Phase 2b.4)
+*([Notion: web client (React + Vite + Tailwind)](https://www.notion.so/34b47fdae49a806b8e86fcfb24fcdc8d))*
 
 Sibling to `apps/desktop`. Same toolchain (Vite + React 18 + TS +
 Tailwind), no Tauri — hits `orchext-server` directly over HTTPS.
@@ -138,6 +140,7 @@ write path lands and starts accumulating non-trivial UI state
 transitions.
 
 ### Writes — 2026-04-22
+*([Notion: web document CRUD + editor](https://www.notion.so/34d47fdae49a8109a1c2f5728d76bfca))*
 
 Web client now has create / edit / delete parity with desktop for the
 doc list. `DocumentsView.tsx` drops the read-only `<pre>` rendering and
@@ -170,6 +173,7 @@ Bundle footprint after `js-yaml`:
 - `orchext_crypto_wasm_bg.wasm` — 82 KB
 
 ### Tokens + audit views — 2026-04-22
+*([Notion: web tokens + audit views](https://www.notion.so/34d47fdae49a81a9af78cb30a33c225b))*
 
 Web client gets parity with desktop for the admin surfaces:
 

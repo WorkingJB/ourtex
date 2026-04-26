@@ -9,6 +9,7 @@ status lives in [`../implementation-status.md`](../implementation-status.md).
 ---
 
 ### `orchext-vault` — 2026-04-18
+*([Notion: vault format + storage driver](https://www.notion.so/34b47fdae49a8031b92bda39b62584a3))*
 
 The vault format parser and storage driver abstraction.
 
@@ -32,6 +33,7 @@ The vault format parser and storage driver abstraction.
 **Decisions recorded here:** none — matches spec.
 
 ### `orchext-audit` — 2026-04-18
+*([Notion: append-only audit log](https://www.notion.so/34b47fdae49a80af81fdd485c4df22ad))*
 
 Append-only, hash-chained JSONL audit log. Matches `ARCHITECTURE.md` §5.7 and `MCP.md` §9.
 
@@ -57,6 +59,7 @@ Append-only, hash-chained JSONL audit log. Matches `ARCHITECTURE.md` §5.7 and `
 - Empty log verifies cleanly (0 entries, no last seq/hash)
 
 ### `orchext-auth` — 2026-04-18
+*([Notion: token service](https://www.notion.so/34b47fdae49a803b98f4eb9aed1e9e87))*
 
 Token service: issuance, Argon2id hashing, scope eval including the `private` hard floor, revocation, expiry, retrieval limits.
 
@@ -91,6 +94,7 @@ Token service: issuance, Argon2id hashing, scope eval including the `private` ha
 ---
 
 ### `orchext-index` — 2026-04-18
+*([Notion: SQLite + FTS5 indexer + graph queries](https://www.notion.so/34b47fdae49a8046909ce0aa7d968984))*
 
 Full-text search + tag/type filter + link graph over the vault. Backed
 by SQLite with FTS5.
@@ -123,6 +127,7 @@ by SQLite with FTS5.
 - `reindex_from_vault_and_search`: reindex produces correct `IndexStats`, subsequent search returns hits.
 
 ### `orchext-mcp` — 2026-04-19
+*([Notion: JSON-RPC 2.0 MCP server](https://www.notion.so/34b47fdae49a8091904cd4790ea31aad))*
 
 JSON-RPC 2.0 MCP server over stdio. Wires the four backing services
 (`vault`, `index`, `auth`, `audit`) behind the v1 surface defined by
@@ -270,6 +275,7 @@ the `context.` namespace (D3). Results include provenance
 ---
 
 ### `orchext-desktop` — 2026-04-19
+*(Notion: [Desktop Tauri app + React UI](https://www.notion.so/34b47fdae49a80fc9b5cf59683c43a1d) · [Phase 2a multi-vault switcher](https://www.notion.so/34b47fdae49a80428509dd81db41891a))*
 
 Tauri 2 desktop app (Rust backend + React/Vite/TS/Tailwind frontend).
 Lives at `apps/desktop/`; the Rust side is `apps/desktop/src-tauri/`

@@ -61,6 +61,7 @@ double-work when an agent picks up an aggregated task (3e-adjacent).
 ## Sub-milestones
 
 ### Phase 3c.1 — Linear adapter + team-inbox infra
+*(Notion: [Linear adapter + endpoint](https://www.notion.so/34d47fdae49a81129046c74a8ed72bd2) · [team-inbox view](https://www.notion.so/34d47fdae49a81f9ac99daba62ea6d9d))*
 
 Smallest adapter after Todoist. Linear's GraphQL + webhook story is
 well-documented; use its shape to finalize the trait boundary before
@@ -83,6 +84,7 @@ adding the messier providers.
   group-by `assignee` on projection.
 
 ### Phase 3c.2 — Jira + Asana + MS To Do adapters
+*(Notion: [Jira/Asana/MS To Do adapters](https://www.notion.so/34d47fdae49a8105bdfaea3286db0c69) · [status push-back](https://www.notion.so/34d47fdae49a81b1a665f4db9d32340c))*
 
 Three adapters in one phase because each is a repeat of the
 3b.2 / 3c.1 template; no new architectural surface.
