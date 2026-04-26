@@ -191,7 +191,10 @@ async fn logout_revokes_session(db: PgPool) {
     let app = router(AppState::new(db).with_rate_limit_auth(false));
     let signup_resp = app
         .clone()
-        .oneshot(signup_req("user@example.com", "correct horse battery staple"))
+        .oneshot(native_signup_req(
+            "user@example.com",
+            "correct horse battery staple",
+        ))
         .await
         .unwrap();
     let body: Value = read_json(signup_resp.into_body()).await;
@@ -326,6 +329,24 @@ fn signup_req(email: &str, password: &str) -> Request<Body> {
             json!({
                 "email": email,
                 "password": password,
+            })
+            .to_string(),
+        ))
+        .unwrap()
+}
+
+/// Native (bearer-returning) signup. Use when the test needs the session
+/// secret in the response body — the browser endpoint only sets a cookie.
+fn native_signup_req(email: &str, password: &str) -> Request<Body> {
+    Request::builder()
+        .method("POST")
+        .uri("/v1/auth/native/signup")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "email": email,
+                "password": password,
+                "display_name": "User",
             })
             .to_string(),
         ))

@@ -137,6 +137,7 @@ web); servers live under `crates/`.
 ## Sub-milestones
 
 ### Phase 2a — Multi-vault desktop + workspace switcher **[SHIPPED 2026-04-19]**
+*([Notion](https://www.notion.so/34b47fdae49a80428509dd81db41891a))*
 
 Desktop now tracks N registered vaults and switches between them from
 the header. Unblocks use case 5 locally. See
@@ -148,6 +149,7 @@ view; no URL routing (Phase 2a plan proposed `/w/:id/...`, dropped —
 React state is enough).
 
 ### Phase 2b.1 — Server skeleton + user auth (plaintext) **[SHIPPED 2026-04-19]**
+*([Notion](https://www.notion.so/34b47fdae49a80d7a07aca2c31db3cba))*
 
 Gets the deployment shape real before anything depends on it: axum +
 Postgres + sessions + Docker/compose packaging. See
@@ -158,6 +160,7 @@ schema, decisions, and tests.
 limiting beyond axum/tower defaults. All additive in 2b.x.
 
 ### Phase 2b.2 — Vault + index endpoints, `orchext-sync` client **[SHIPPED 2026-04-19]**
+*(Notion: [vault+index endpoints](https://www.notion.so/34b47fdae49a8007b10ecec54458f25e) · [orchext-sync](https://www.notion.so/34b47fdae49a8054bd86c7de49c7dd7e) · [desktop remote registration](https://www.notion.so/34d47fdae49a81718f80f6a184b3c3fc))*
 
 Server speaks the `VaultDriver` + `Index` + token + audit surface over
 HTTP; `orchext-sync` client crate adapts it back into the trait shape
@@ -171,6 +174,7 @@ agent tokens (→ 2b.5); no offline write queue; no cross-tenant search.
 ~5-minute UI task; backend is wired.
 
 ### Phase 2b.3 — `orchext-crypto` + session-bound decryption **[SHIPPED 2026-04-19]**
+*(Notion: [orchext-crypto](https://www.notion.so/34b47fdae49a80adb0fac091491f0d60) · [server session-key](https://www.notion.so/34b47fdae49a80fabe34da9df833c33e) · [desktop unlock/heartbeat](https://www.notion.so/34b47fdae49a808988f3f14d8b846e9a))*
 
 Encryption at rest + the session-bound key-publish model from
 ARCH §3.4 / Q3. See [`phase-2b3-encryption.md`](phase-2b3-encryption.md)
@@ -192,6 +196,7 @@ for the route list, decisions, and test coverage. Highlights:
   is live).
 
 ### Phase 2b.4 — Web client **[SHIPPED 2026-04-25]**
+*(Notion: [web client](https://www.notion.so/34b47fdae49a806b8e86fcfb24fcdc8d) · [WASM crypto wrapper](https://www.notion.so/34d47fdae49a810f8e65f18bb9667e21) · [doc CRUD + editor](https://www.notion.so/34d47fdae49a8109a1c2f5728d76bfca) · [tokens + audit views](https://www.notion.so/34d47fdae49a81a9af78cb30a33c225b))*
 
 Separate app, feature-parity with desktop's remote-workspace mode.
 Pulled ahead of MCP HTTP/SSE so a shareable URL lands sooner;
@@ -236,15 +241,24 @@ Four slices, in order:
    bearer flow preserved for desktop. Drops `localStorage` from
    `apps/web` and replaces session-bootstrapping with an
    `/v1/auth/me` probe.
+   *([Notion](https://www.notion.so/34d47fdae49a81d4add7cfd2b7151ca8) — Done 2026-04-25)*
 2. **OAuth 2.1 + PKCE** for agent token issuance — rolled (D16).
    Authorization-code + PKCE, audience-bound bearer tokens, issued
    by the logged-in user via the desktop/web UI. Opaque token shape
    (still D15) — OAuth defines the *issuance* flow, not the token
-   encoding.
+   encoding. **Server surface shipped 2026-04-25:**
+   `POST /v1/oauth/authorize` (session-authed, S256-only PKCE,
+   loopback-or-HTTPS redirect URIs, single-use 10-min codes),
+   `POST /v1/oauth/token` (PKCE verify, exact redirect-uri match,
+   `mcp_tokens` issuance). UI on desktop + web is the remaining
+   work for slice closure.
+   *([Notion](https://www.notion.so/34b47fdae49a80f8bf91d7f85aa1590c))*
 3. **MCP transport** on `orchext-server`: JSON-RPC over HTTP + SSE
    per `MCP.md` §2.2. Same tools, same error model.
+   *([Notion](https://www.notion.so/34b47fdae49a80cfaf2deabe4f71c339))*
 4. **`context.propose`** lands on both surfaces. Desktop + web
    proposal review queue for admins (Phase 3 platform-ready).
+   *([Notion](https://www.notion.so/34b47fdae49a8090a361ca985f9ebd6c))*
 
 **Unblocks after full 2b:** use case 2 end-to-end. Also a power-user
 flavor of use case 1 (own server, own devices).

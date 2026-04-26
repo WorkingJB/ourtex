@@ -21,10 +21,13 @@ that limit, consolidate scope or break out a sub-phase.
 desktop frontends. wasm-pack 0.14 drives the browser crypto build.
 Workspace at repo root.
 
-**Test totals:** 153/153 passing with `DATABASE_URL` set; 133/133
+**Test totals:** 174/174 passing with `DATABASE_URL` set; 142/142
 without the DB-required suite (Rust only — `apps/web` has no JS test
-suite yet). +5 unit tests this round, all in the new `cookies`
-module.
+suite yet). +17 this round: 9 OAuth integration tests + 8 OAuth
+unit tests for the server-side PKCE flow shipped 2026-04-25. The
+`logout_revokes_session` integration test was also fixed to call the
+bearer-returning native signup endpoint after the auth hardening
+split signup into browser-cookie + native-bearer paths.
 
 **Scope shuffle 2026-04-25:** four scope changes folded in one pass.
 (1) **Graph view dropped.** Desktop's `GraphView.tsx` +
@@ -69,17 +72,24 @@ task aggregation + agent orchestration. Plan detail in
 | `orchext-crypto-wasm` | ✅ 2b.4 | —  | —               | wasm-bindgen surface; 4 ops: generateSalt/ContentKey, wrap/unwrap |
 | `orchext-web`    | ✅ 2b.4 + 🚧 2b.5 | — | —           | Login + tenant picker + unlock + doc CRUD + tokens + audit; cookie/CSRF auth in flight |
 
-**In flight:** Phase 2b.5 — auth hardening + agent surface. Opened
-2026-04-25 with the web auth migration: server emits an httpOnly
-`orchext_session` cookie alongside a readable `orchext_csrf` cookie on
-login/signup, and accepts either bearer (desktop) or cookie (web) on
-authenticated routes. State-changing cookie-authed requests must
-double-submit CSRF via `X-Orchext-CSRF` header. Web client drops its
-`localStorage` token entirely and probes `/v1/auth/me` on load to
-classify session state. Subsequent 2b.5 slices: OAuth 2.1 + PKCE for
-agent tokens, MCP HTTP/SSE transport, `context.propose`. Details in
-[`phases/phase-2b5-auth-mcp.md`](phases/phase-2b5-auth-mcp.md) (TBD);
-forward plan in [`phases/phase-2-plan.md`](phases/phase-2-plan.md).
+**In flight:** Phase 2b.5 — auth hardening + agent surface. Web auth
+hardening **closed 2026-04-25** *([Notion](https://www.notion.so/34d47fdae49a81d4add7cfd2b7151ca8))*:
+server emits an httpOnly `orchext_session` cookie alongside a readable
+`orchext_csrf` cookie on login/signup, and accepts either bearer
+(desktop) or cookie (web) on authenticated routes. State-changing
+cookie-authed requests must double-submit CSRF via `X-Orchext-CSRF`
+header. Web client dropped its `localStorage` token entirely and
+probes `/v1/auth/me` on load to classify session state.
+**OAuth 2.1 + PKCE — server surface shipped 2026-04-25**
+*([Notion](https://www.notion.so/34b47fdae49a80f8bf91d7f85aa1590c))*:
+`POST /v1/oauth/authorize` (session-authed) issues a single-use 10-min
+`oac_*` code under PKCE S256 + redirect URI validation; `POST /v1/oauth/token`
+exchanges `(code, verifier, redirect_uri)` for an audience-bound `ocx_*`
+bearer in `mcp_tokens`. Migration `0005_oauth.sql`. Desktop + web UI
+to drive the flow is the remaining work for the slice. Subsequent
+2b.5 slices: **MCP HTTP/SSE transport** *([Notion](https://www.notion.so/34b47fdae49a80cfaf2deabe4f71c339))*,
+**`context.propose`** write-back flow *([Notion](https://www.notion.so/34b47fdae49a8090a361ca985f9ebd6c))*.
+Forward plan in [`phases/phase-2-plan.md`](phases/phase-2-plan.md).
 
 **Just shipped:** Phase 2b.4 closed 2026-04-25. Web client gained
 login + signup, tenant picker, browser unlock with WASM-side
@@ -94,26 +104,52 @@ Phase 3 platform.
 
 ### Shipped (frozen)
 
+Each phase entry below cross-references its tracked Notion backlog
+items. The full per-item index lives in
+[`memory/notion_backlog_index.md`](../../.claude/projects/-Users-jonathanbutler-Documents-Development-orchext/memory/notion_backlog_index.md)
+(local memory, not in-repo) and inline next to each item in the
+phase docs themselves.
+
 - [`phases/phase-1-core.md`](phases/phase-1-core.md) — Core v1:
   vault, audit, auth, index, mcp, desktop (incl. Phase 2a
   multi-vault).
+  *(Notion: [vault](https://www.notion.so/34b47fdae49a8031b92bda39b62584a3) ·
+  [audit](https://www.notion.so/34b47fdae49a80af81fdd485c4df22ad) ·
+  [auth/tokens](https://www.notion.so/34b47fdae49a803b98f4eb9aed1e9e87) ·
+  [index](https://www.notion.so/34b47fdae49a8046909ce0aa7d968984) ·
+  [mcp](https://www.notion.so/34b47fdae49a8091904cd4790ea31aad) ·
+  [desktop](https://www.notion.so/34b47fdae49a80fc9b5cf59683c43a1d) ·
+  [Phase 2a multi-vault](https://www.notion.so/34b47fdae49a80428509dd81db41891a))*
 - [`phases/phase-2b1-server.md`](phases/phase-2b1-server.md) —
   Server skeleton + auth (axum, Postgres, sessions).
+  *([Notion](https://www.notion.so/34b47fdae49a80d7a07aca2c31db3cba))*
 - [`phases/phase-2b2-remote-vault.md`](phases/phase-2b2-remote-vault.md) —
   Tenant-scoped vault/index/token/audit HTTP endpoints + `orchext-sync`
   client + desktop remote workspaces.
+  *(Notion: [endpoints](https://www.notion.so/34b47fdae49a8007b10ecec54458f25e) ·
+  [orchext-sync](https://www.notion.so/34b47fdae49a8054bd86c7de49c7dd7e) ·
+  [desktop](https://www.notion.so/34d47fdae49a81718f80f6a184b3c3fc))*
 - [`phases/phase-2b3-encryption.md`](phases/phase-2b3-encryption.md) —
   `orchext-crypto` + session-bound decryption; encrypted
   `body_ciphertext`; desktop unlock/lock + heartbeat.
+  *(Notion: [crypto](https://www.notion.so/34b47fdae49a80adb0fac091491f0d60) ·
+  [server session-key](https://www.notion.so/34b47fdae49a80fabe34da9df833c33e) ·
+  [desktop unlock/heartbeat](https://www.notion.so/34b47fdae49a808988f3f14d8b846e9a))*
 - [`phases/phase-2b4-web.md`](phases/phase-2b4-web.md) — `apps/web` +
   `orchext-crypto-wasm`; login, tenant picker, unlock, doc CRUD,
   tokens, audit. Closed 2026-04-25 without graph or onboarding chat.
+  *(Notion: [web client](https://www.notion.so/34b47fdae49a806b8e86fcfb24fcdc8d) ·
+  [WASM crypto](https://www.notion.so/34d47fdae49a810f8e65f18bb9667e21) ·
+  [doc CRUD](https://www.notion.so/34d47fdae49a8109a1c2f5728d76bfca) ·
+  [tokens + audit](https://www.notion.so/34d47fdae49a81a9af78cb30a33c225b))*
 
 ### In flight
 
 - [`phases/phase-2-plan.md`](phases/phase-2-plan.md) (Phase 2b.5) —
-  Auth hardening (cookie + CSRF) opened 2026-04-25, then OAuth 2.1
-  PKCE, MCP HTTP/SSE, `context.propose`.
+  Auth hardening *([Notion: Done](https://www.notion.so/34d47fdae49a81d4add7cfd2b7151ca8))*,
+  then OAuth 2.1 PKCE *([Notion](https://www.notion.so/34b47fdae49a80f8bf91d7f85aa1590c))*,
+  MCP HTTP/SSE *([Notion](https://www.notion.so/34b47fdae49a80cfaf2deabe4f71c339))*,
+  `context.propose` *([Notion](https://www.notion.so/34b47fdae49a8090a361ca985f9ebd6c))*.
 
 ### Planned
 
@@ -123,29 +159,78 @@ Phase 3 platform.
 - [`phases/phase-3-platform.md`](phases/phase-3-platform.md) —
   Teams + invites (formerly Phase 2c), web onboarding chat, OS
   keychain. Bundles the work pushed out of 2b.4 and 2b.5 narrowing.
+  *(Notion: [teams](https://www.notion.so/34b47fdae49a80a09100d7e9ec10afe8) ·
+  [org/ seed type](https://www.notion.so/34b47fdae49a80f3aa60c780298ebe07) ·
+  [team UI](https://www.notion.so/34b47fdae49a8033bec2e5f0a2eeaf33) ·
+  [onboarding chat](https://www.notion.so/34d47fdae49a81d6a012e90cbbcb0d0b) ·
+  [OS keychain](https://www.notion.so/34d47fdae49a819c8ce9dd6511989596))*
 - [`phases/phase-3a-rebrand-tasks.md`](phases/phase-3a-rebrand-tasks.md) —
   Rebrand `orchext` → `orchext` + vault-native `type: task` and
   `type: skill` seed types (FORMAT v0.2). Kicks off after Phase 3
   platform wraps.
+  *(Notion: [rebrand sweep](https://www.notion.so/34d47fdae49a811fb29af81c1e4e503a) ·
+  [FORMAT v0.2](https://www.notion.so/34d47fdae49a812aa86cd06ccd5994de) ·
+  [vault-native task docs](https://www.notion.so/34d47fdae49a816daa7ce593c1156a83) ·
+  [orchext-tasks crate](https://www.notion.so/34d47fdae49a8197bf6aee1abc7f6b42) ·
+  [index views](https://www.notion.so/34d47fdae49a81209ef3c925818eb982) ·
+  [MCP task tools](https://www.notion.so/34d47fdae49a818ab89be2b10c2c8245) ·
+  [Tasks pane](https://www.notion.so/34d47fdae49a81ed80e3de9472e96e5f) ·
+  [Skills pane](https://www.notion.so/34d47fdae49a8131a033dfd0eae46506))*
 - [`phases/phase-3b-integrations.md`](phases/phase-3b-integrations.md) —
   First external task integration (Todoist) + visibility-driven
   storage tier (`task_projection`) + server-held integration
   credentials. Introduces decisions D18, D22–D26.
+  *(Notion 3b.1: [SECURITY.md carve-outs](https://www.notion.so/34d47fdae49a81ffa240dd96098a0b08) ·
+  [task_projection](https://www.notion.so/34d47fdae49a8160b910d8da2c5101e5) ·
+  [visibility flipping](https://www.notion.so/34d47fdae49a815083a4f99501186ee2) ·
+  [GET /tasks](https://www.notion.so/34d47fdae49a81d29c14c35c9c5f337c).
+  3b.2: [orchext-integrations + trait](https://www.notion.so/34d47fdae49a81779ee4c1a5d23f15cf) ·
+  [Todoist OAuth](https://www.notion.so/34d47fdae49a81ae9be4d49aeee15ec2) ·
+  [external_task_cache](https://www.notion.so/34d47fdae49a81e4a2e0c7133f73d1dc) ·
+  [incoming tray UI](https://www.notion.so/34d47fdae49a81138124fdfa0a781adf) ·
+  [promote-to-vault](https://www.notion.so/34d47fdae49a81709855ea142dbf1178))*
 - [`phases/phase-3c-task-expansion.md`](phases/phase-3c-task-expansion.md) —
   Linear / Jira / Asana / MS To Do adapters + team-inbox aggregation
   (depends on the team workspaces shipped in Phase 3 platform).
   Decisions D27–D30.
+  *(Notion: [Linear adapter + endpoint](https://www.notion.so/34d47fdae49a81129046c74a8ed72bd2) ·
+  [team-inbox view](https://www.notion.so/34d47fdae49a81f9ac99daba62ea6d9d) ·
+  [Jira/Asana/MS To Do adapters](https://www.notion.so/34d47fdae49a8105bdfaea3286db0c69) ·
+  [status push-back](https://www.notion.so/34d47fdae49a81b1a665f4db9d32340c))*
 - [`phases/phase-3d-agent-observer.md`](phases/phase-3d-agent-observer.md) —
   Agent sessions observer-only: `orchext-agents` crate, heartbeat
   protocol, client-encrypted transcripts, activity panes. Decisions
   D31–D35.
+  *(Notion: [orchext-agents + trait](https://www.notion.so/34d47fdae49a81d4bdd4d941d0d974fa) ·
+  [Claude Code adapter](https://www.notion.so/34d47fdae49a819baa8ff7668383d52a) ·
+  [agent_sessions table](https://www.notion.so/34d47fdae49a8173b814cf78f7acce37) ·
+  [server routes + heartbeat](https://www.notion.so/34d47fdae49a81c68b0cd656981f27a9) ·
+  [transcript encryption](https://www.notion.so/34d47fdae49a8152b061eeb25afff98a) ·
+  [cost ledger](https://www.notion.so/34d47fdae49a8171ba6cd316afb62753) ·
+  [Activity pane](https://www.notion.so/34d47fdae49a81a0a466f0995a7e20f6))*
 - [`phases/phase-3e-orchestration.md`](phases/phase-3e-orchestration.md) —
   Full orchestration surface: atomic task checkout, HITL approval
   gates, runtime skill injection, shared team agents, goal
   ancestry. Decisions D36–D42.
+  *(Notion 3e.1: [orchestrator + checkout](https://www.notion.so/34d47fdae49a818abb69d3f52f6a2a3d) ·
+  [goal ancestry](https://www.notion.so/34d47fdae49a81b48113e6d85ab5c4ea) ·
+  [claimed-task push-back](https://www.notion.so/34d47fdae49a811995f5f1c28bceb2b1).
+  3e.2: [HITL approvals](https://www.notion.so/34d47fdae49a8104aa50dbb69b0d458b) ·
+  [Approvals queue UI](https://www.notion.so/34d47fdae49a817b8c66fa97a3a7ad9f) ·
+  [skill injection](https://www.notion.so/34d47fdae49a81c69d1cc8d72149b209) ·
+  [skill_list MCP tool](https://www.notion.so/34d47fdae49a81938f7cc5e15adb6816).
+  3e.3: [shared sessions](https://www.notion.so/34d47fdae49a81c9afbee67244881eb1) ·
+  [team session key slot](https://www.notion.so/34d47fdae49a81919048d52fecd383b6) ·
+  [orchestrator:manage](https://www.notion.so/34d47fdae49a81368f2af140cd9141aa) ·
+  [Board oversight](https://www.notion.so/34d47fdae49a81b8a1f0c7ed7a0f8400))*
 - [`phases/phase-4-installers.md`](phases/phase-4-installers.md) —
   Desktop distribution & installers (signed macOS DMG, Windows MSI,
   Linux, auto-updater). Renumbered from Phase 3 on 2026-04-22.
+  *(Notion: [4.1 macOS DMG](https://www.notion.so/34d47fdae49a81ac90a2e402e46dda59) ·
+  [4.2 Windows MSI](https://www.notion.so/34d47fdae49a8156870fcccef4cbb2ae) ·
+  [4.3 Linux packages](https://www.notion.so/34d47fdae49a811393f1eaa509d25d45) ·
+  [4.4 auto-updater](https://www.notion.so/34d47fdae49a8171b5e6e1dec05fee4b) ·
+  [4.5 download landing](https://www.notion.so/34d47fdae49a81f89104fe82a3890b46))*
 
 ---
 

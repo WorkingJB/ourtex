@@ -16,6 +16,7 @@ pub mod crypto_api;
 pub mod documents;
 pub mod error;
 pub mod idx;
+pub mod oauth;
 pub mod password;
 pub mod session_keys;
 pub mod sessions;
@@ -105,9 +106,22 @@ pub fn router(state: AppState) -> Router {
             auth::session_auth,
         ));
 
+    // OAuth: `/authorize` requires a logged-in user (session-authed).
+    // `/token` does not — the agent client only holds the auth code,
+    // not a session, and the code itself is the credential. Mounted
+    // as siblings under `/v1/oauth`.
+    let oauth_authorize: Router<AppState> = oauth::authorize_router()
+        .route_layer(middleware::from_fn(auth::csrf_guard))
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            auth::session_auth,
+        ));
+    let oauth_routes: Router<AppState> = oauth::router().merge(oauth_authorize);
+
     Router::new()
         .route("/healthz", get(healthz))
         .nest("/v1/auth", auth::router(state.clone()))
+        .nest("/v1/oauth", oauth_routes)
         .nest("/v1", tenants_route)
         .nest("/v1/t/:tid", tenant_routes)
         .with_state(state)

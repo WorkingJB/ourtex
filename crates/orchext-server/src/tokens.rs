@@ -22,7 +22,7 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use chrono::{DateTime, Duration, Utc};
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
-use sqlx::FromRow;
+use sqlx::{FromRow, PgPool};
 use uuid::Uuid;
 
 pub fn router() -> Router<AppState> {
@@ -103,27 +103,109 @@ async fn issue_token(
 ) -> Result<(StatusCode, Json<IssueResponse>), ApiError> {
     validate_label(&req.label)?;
     let scope = normalize_scope(req.scope)?;
-    let mode = match req.mode.as_deref() {
-        None | Some("read") => "read",
-        Some("read_propose") => "read_propose",
-        Some(other) => {
-            return Err(ApiError::InvalidArgument(format!(
-                "mode must be 'read' or 'read_propose', got {other:?}"
-            )));
-        }
-    };
-    let ttl_days = req
-        .ttl_days
-        .unwrap_or(DEFAULT_TTL_DAYS)
-        .clamp(1, MAX_TTL_DAYS);
+    let mode = normalize_mode(req.mode.as_deref())?.to_string();
+    let ttl_days = clamp_ttl_days(req.ttl_days);
     let max_docs = req.max_docs.unwrap_or(20).max(1);
     let max_bytes = req.max_bytes.unwrap_or(64 * 1024).max(1024);
 
+    let issued = insert_token(
+        &state.db,
+        InsertTokenInput {
+            tenant_id: tc.tenant_id,
+            issued_by: tc.account_id,
+            label: req.label,
+            scope,
+            mode,
+            max_docs,
+            max_bytes,
+            ttl_days,
+        },
+    )
+    .await?;
+
+    Ok((
+        StatusCode::CREATED,
+        Json(IssueResponse {
+            secret: issued.secret,
+            token: issued.row,
+        }),
+    ))
+}
+
+/// Input shape for the OAuth `/token` endpoint to issue a real
+/// `mcp_tokens` row. Same field set as `IssueRequest` but with the
+/// caller fields explicit (no `TenantContext`/`SessionContext`).
+pub(crate) struct OAuthIssueInput {
+    pub tenant_id: Uuid,
+    pub issued_by: Uuid,
+    pub label: String,
+    pub scope: Vec<String>,
+    pub mode: String,
+    pub max_docs: i32,
+    pub max_bytes: i64,
+    pub ttl_days: i64,
+}
+
+pub(crate) struct OAuthIssued {
+    pub id: String,
+    pub secret: String,
+    pub expires_at: DateTime<Utc>,
+}
+
+/// Issue a token row from the OAuth code-exchange path. Skips the
+/// session-bound caller fields because the OAuth `/token` endpoint
+/// runs without a user session — the auth code already pinned
+/// `tenant_id` and `issued_by` at /authorize time.
+pub(crate) async fn issue_via_oauth(
+    db: &PgPool,
+    input: OAuthIssueInput,
+) -> Result<OAuthIssued, ApiError> {
+    let issued = insert_token(
+        db,
+        InsertTokenInput {
+            tenant_id: input.tenant_id,
+            issued_by: input.issued_by,
+            label: input.label,
+            scope: input.scope,
+            mode: input.mode,
+            max_docs: input.max_docs,
+            max_bytes: input.max_bytes,
+            ttl_days: input.ttl_days,
+        },
+    )
+    .await?;
+    Ok(OAuthIssued {
+        id: issued.row.id,
+        secret: issued.secret,
+        expires_at: issued.row.expires_at,
+    })
+}
+
+struct InsertTokenInput {
+    tenant_id: Uuid,
+    issued_by: Uuid,
+    label: String,
+    scope: Vec<String>,
+    mode: String,
+    max_docs: i32,
+    max_bytes: i64,
+    ttl_days: i64,
+}
+
+struct InsertedToken {
+    secret: String,
+    row: PublicToken,
+}
+
+async fn insert_token(
+    db: &PgPool,
+    input: InsertTokenInput,
+) -> Result<InsertedToken, ApiError> {
     let secret = generate_secret();
     let prefix = secret[..PREFIX_LOOKUP_LEN].to_string();
     let hash = password::hash(&secret).map_err(|e| ApiError::Internal(Box::new(e)))?;
     let id = generate_token_id();
-    let expires_at = Utc::now() + Duration::days(ttl_days);
+    let expires_at = Utc::now() + Duration::days(input.ttl_days);
 
     let row: PublicToken = sqlx::query_as(
         r#"
@@ -136,26 +218,20 @@ async fn issue_token(
         "#,
     )
     .bind(&id)
-    .bind(tc.tenant_id)
-    .bind(tc.account_id)
-    .bind(&req.label)
+    .bind(input.tenant_id)
+    .bind(input.issued_by)
+    .bind(&input.label)
     .bind(&prefix)
     .bind(&hash)
-    .bind(&scope)
-    .bind(mode)
-    .bind(max_docs)
-    .bind(max_bytes)
+    .bind(&input.scope)
+    .bind(&input.mode)
+    .bind(input.max_docs)
+    .bind(input.max_bytes)
     .bind(expires_at)
-    .fetch_one(&state.db)
+    .fetch_one(db)
     .await?;
 
-    Ok((
-        StatusCode::CREATED,
-        Json(IssueResponse {
-            secret,
-            token: row,
-        }),
-    ))
+    Ok(InsertedToken { secret, row })
 }
 
 async fn revoke_token(
@@ -192,7 +268,7 @@ async fn revoke_token(
     Ok(StatusCode::NO_CONTENT)
 }
 
-fn normalize_scope(raw: Vec<String>) -> Result<Vec<String>, ApiError> {
+pub(crate) fn normalize_scope(raw: Vec<String>) -> Result<Vec<String>, ApiError> {
     if raw.is_empty() {
         return Err(ApiError::InvalidArgument("scope must not be empty".into()));
     }
@@ -211,7 +287,21 @@ fn normalize_scope(raw: Vec<String>) -> Result<Vec<String>, ApiError> {
     Ok(out)
 }
 
-fn validate_label(s: &str) -> Result<(), ApiError> {
+pub(crate) fn normalize_mode(mode: Option<&str>) -> Result<&'static str, ApiError> {
+    match mode {
+        None | Some("read") => Ok("read"),
+        Some("read_propose") => Ok("read_propose"),
+        Some(other) => Err(ApiError::InvalidArgument(format!(
+            "mode must be 'read' or 'read_propose', got {other:?}"
+        ))),
+    }
+}
+
+pub(crate) fn clamp_ttl_days(ttl_days: Option<i64>) -> i64 {
+    ttl_days.unwrap_or(DEFAULT_TTL_DAYS).clamp(1, MAX_TTL_DAYS)
+}
+
+pub(crate) fn validate_label(s: &str) -> Result<(), ApiError> {
     if s.trim().is_empty() || s.len() > 200 {
         return Err(ApiError::InvalidArgument(
             "label must be 1..=200 chars".into(),
