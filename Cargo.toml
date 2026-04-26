@@ -8,6 +8,7 @@ members = [
     "crates/orchext-mcp",
     "crates/orchext-server",
     "crates/orchext-sync",
+    "crates/orchext-oauth-client",
     "crates/orchext-crypto",
     "crates/orchext-crypto-wasm",
     "apps/desktop/src-tauri",

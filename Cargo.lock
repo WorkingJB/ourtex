@@ -3117,6 +3117,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "orchext-oauth-client"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "rand 0.8.6",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 1.0.69",
+ "tokio",
+ "url",
+ "uuid",
+]
+
+[[package]]
 name = "orchext-server"
 version = "0.1.0"
 dependencies = [
