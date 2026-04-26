@@ -15,24 +15,18 @@ that limit, consolidate scope or break out a sub-phase.
 
 ## Snapshot
 
-**Last updated:** 2026-04-25
+**Last updated:** 2026-04-26
 
 **Toolchain:** Rust 1.95.0 stable (rustup) + Node 20+ for the web /
 desktop frontends. wasm-pack 0.14 drives the browser crypto build.
 Workspace at repo root.
 
-**Test totals:** 209/209 passing with `DATABASE_URL` set; 158/158
+**Test totals:** 213/213 passing with `DATABASE_URL` set; 158/158
 without the DB-required suite (Rust only — `apps/web` has no JS test
-suite yet). +52 across two rounds: the OAuth slice added 17 server
-tests + 9 client tests, and the MCP HTTP slice added 7 unit + 19
-integration tests covering lifecycle, every tool happy path, scope
-enforcement (out-of-scope + private floor + widening rejection),
-missing-doc indistinguishability, resources/{list,read} including
-the type-listing and YAML+markdown body shape, and auth failures
-(missing/invalid/revoked bearer + unknown-method JSON-RPC error).
-The `logout_revokes_session` integration test was also fixed to
-call the bearer-returning native signup endpoint after the auth
-hardening split signup into browser-cookie + native-bearer paths.
+suite yet). +52 across the OAuth + MCP HTTP rounds, then +4 in the
+deployment-hardening pass (1 `/readyz` happy-path, 3 CORS layer
+tests covering the empty-origin no-mount default, allowed-origin
+echo, and disallowed-origin block).
 
 **Scope shuffle 2026-04-25:** four scope changes folded in one pass.
 (1) **Graph view dropped.** Desktop's `GraphView.tsx` +
@@ -71,7 +65,7 @@ task aggregation + agent orchestration. Plan detail in
 | `orchext-index`  | ✅ shipped     | 4    | 6           | SQLite + FTS5; search / graph / filter |
 | `orchext-mcp`    | ✅ shipped     | 11   | 22          | JSON-RPC + stdio; rate limit + fs watcher |
 | `orchext-desktop`| ✅ 2a + 2b.2 + 2b.3 | 7 | —           | Multi-vault + remote connect + unlock/lock |
-| `orchext-server` | ✅ 2b.3 + 2b.5 | 41 | 39          | Auth + vault + index + tokens + audit + crypto + OAuth + MCP HTTP |
+| `orchext-server` | ✅ 2b.3 + 2b.5 | 41 | 43          | Auth + vault + index + tokens + audit + crypto + OAuth + MCP HTTP + readiness + CORS |
 | `orchext-sync`   | ✅ 2b.2 + 2b.3 | 0   | —           | `RemoteVaultDriver` + crypto control calls |
 | `orchext-oauth-client` | ✅ 2b.5 | 9 | —           | PKCE agent helper + `orchext-oauth` CLI    |
 | `orchext-crypto` | ✅ 2b.3 + wasm32 | 13 | —           | Argon2id KDF + XChaCha20-Poly1305 AEAD; browser build clean |

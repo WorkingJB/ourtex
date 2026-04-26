@@ -1,0 +1,65 @@
+name: server
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Cancel in-progress runs of this workflow on the same ref when a
+# new commit lands — saves CI minutes on rapid push.
+concurrency:
+  group: server-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: fmt + clippy + test
+    runs-on: ubuntu-latest
+
+    services:
+      # Mirrors the Postgres version Neon ships in production.
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: orchext
+          POSTGRES_PASSWORD: testpw
+          POSTGRES_DB: orchext_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U orchext -d orchext_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgres://orchext:testpw@localhost:5432/orchext_test
+      CARGO_TERM_COLOR: always
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache cargo registry + target
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: server
+
+      # `cargo fmt --check` is intentionally not gated yet — the
+      # workspace has pre-existing rustfmt drift across ~140 files
+      # that needs a one-shot cleanup before this becomes useful as
+      # a CI gate. Tracked as a follow-up.
+
+      - name: cargo clippy
+        # `-W warnings` (not `-D warnings`) — there are a few
+        # pre-existing test-helper warnings we don't want to fail
+        # CI on while the broader cleanup is pending. Treat clippy
+        # output as advisory until the warning floor is zero.
+        run: cargo clippy --workspace --all-targets
+
+      - name: cargo test
+        run: cargo test --workspace --all-targets

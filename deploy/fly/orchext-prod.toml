@@ -1,0 +1,52 @@
+# Fly.io configuration for the production orchext-server instance.
+#
+# Bring up:
+#   flyctl apps create orchext-prod --org <your-org>
+#   flyctl secrets set DATABASE_URL='postgres://…' --app orchext-prod
+#   flyctl deploy --config deploy/fly/orchext-prod.toml
+#
+# Day-to-day deploy (run from repo root so the build context is the
+# whole workspace — the Dockerfile expects to see every crate):
+#   flyctl deploy --config deploy/fly/orchext-prod.toml
+#
+# See docs/DEPLOYMENT.md §4 for the full topology and rationale.
+
+app = "orchext-prod"
+primary_region = "iad"
+
+[build]
+  dockerfile = "crates/orchext-server/Dockerfile"
+
+[env]
+  ORCHEXT_BIND = "0.0.0.0:8080"
+  ORCHEXT_SECURE_COOKIES = "1"
+  ORCHEXT_DB_MAX_CONNECTIONS = "10"
+  RUST_LOG = "orchext_server=info,axum=info,sqlx=warn"
+  # ORCHEXT_CORS_ALLOW_ORIGINS intentionally unset — the SaaS web app
+  # is same-origin via Vercel rewrites, so no CORS layer is mounted.
+
+# Production stays warm. Test env can scale to zero (see
+# orchext-test.toml) — production should not, since cold-start
+# latency is user-visible.
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+
+  # `/readyz` is the deeper probe — returns 503 if the DB pool can't
+  # `SELECT 1`. Fly stops routing traffic to a 503ing instance; that's
+  # correct behaviour when Postgres is unreachable.
+  [[http_service.checks]]
+    method = "GET"
+    path = "/readyz"
+    interval = "15s"
+    timeout = "5s"
+    grace_period = "10s"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "1gb"
+  cpu_kind = "shared"
+  cpus = 1

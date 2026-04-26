@@ -47,16 +47,19 @@ services:
       DATABASE_URL: postgres://orchext:${ORCHEXT_POSTGRES_PASSWORD:-orchext-dev-password}@postgres:5432/orchext
       ORCHEXT_BIND: 0.0.0.0:8080
       ORCHEXT_SECURE_COOKIES: ${ORCHEXT_SECURE_COOKIES:-0}
+      ORCHEXT_CORS_ALLOW_ORIGINS: ${ORCHEXT_CORS_ALLOW_ORIGINS:-}
       RUST_LOG: orchext_server=info,axum=info,sqlx=warn
     ports:
       - "8080:8080"
+    # Inherits the HEALTHCHECK baked into the Dockerfile (HTTP GET
+    # /healthz via wget). Override here only if you want a different
+    # interval or to point at /readyz for a deeper DB-included probe.
     healthcheck:
-      # Use Postgres' built-in curl substitute via wget (present in the
-      # runtime image's base doesn't apply — we don't have it). The
-      # cleanest dep-free check is to shell out to the server binary's
-      # own exit semantics; for now we rely on docker's built-in TCP
-      # liveness by omitting CMD here, falling back to container-up.
-      disable: true
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8080/healthz"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
 
 volumes:
   postgres-data:

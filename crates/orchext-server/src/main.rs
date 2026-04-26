@@ -2,6 +2,7 @@ use orchext_server::{config::Config, router, AppState};
 use sqlx::postgres::PgPoolOptions;
 use std::net::SocketAddr;
 use tokio::net::TcpListener;
+use tower_http::trace::TraceLayer;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -33,6 +34,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
         app = app.layer(cors);
     }
+
+    // Outermost layer: every request is wrapped in a `request` span
+    // carrying a fresh UUID. Any `tracing::info!`/`warn!`/etc. inside
+    // a handler inherits the span's fields, so a single request's log
+    // lines are greppable by `id=…` in Fly's log feed. The id is
+    // generated server-side rather than honoured from `X-Request-Id`
+    // so callers can't pollute or impersonate request IDs in our logs.
+    app = app.layer(
+        TraceLayer::new_for_http().make_span_with(|req: &axum::http::Request<_>| {
+            tracing::info_span!(
+                "request",
+                id = %uuid::Uuid::new_v4(),
+                method = %req.method(),
+                uri = %req.uri(),
+            )
+        }),
+    );
 
     let addr: SocketAddr = config.bind.parse()?;
     let listener = TcpListener::bind(addr).await?;

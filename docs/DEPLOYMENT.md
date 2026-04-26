@@ -99,29 +99,29 @@ environment, both deployed from the same Git repo.
 
 The browser must see one origin so the existing cookie model
 (`HttpOnly` + `Secure` + `SameSite=Lax`) keeps working without any
-server change. Vercel's `rewrites` config does this transparently:
+server change. Vercel's *Project Settings → Rewrites* does this
+transparently:
 
-```jsonc
-// apps/web/vercel.json (committed; values via env per project)
-{
-  "rewrites": [
-    { "source": "/v1/:path*",  "destination": "https://orchext-prod.fly.dev/v1/:path*" },
-    { "source": "/healthz",    "destination": "https://orchext-prod.fly.dev/healthz" }
-  ]
-}
-```
+| Source path | Prod destination | Test destination |
+|---|---|---|
+| `/v1/:path*` | `https://orchext-prod.fly.dev/v1/:path*` | `https://orchext-test.fly.dev/v1/:path*` |
+| `/healthz`   | `https://orchext-prod.fly.dev/healthz`   | `https://orchext-test.fly.dev/healthz` |
 
-Each environment's `vercel.json` (or per-project setting) targets its
-own Fly app. The browser only ever sees `app.orchext.ai` — no CORS,
+Configured per Vercel project via the dashboard — **not** in a
+committed `vercel.json`. That file would force both projects to
+point at the same Fly app (Vercel rewrites don't support env-var
+substitution), and "single in-repo config that's wrong for one
+environment" is worse than the small duplication of two UI
+settings. The browser only ever sees `app.orchext.ai` — no CORS,
 no `SameSite=None`, no cross-origin cookie surface.
 
 ### 3.3 What changes in the codebase
 
-- Add `apps/web/vercel.json` (or use Vercel project-level rewrites,
-  parameterised per env).
 - No code change in `apps/web/src/api.ts` — relative paths already
   work.
 - No code change in `crates/orchext-server`.
+- No `vercel.json` committed; both projects' rewrites live in
+  Vercel's UI (see [`deploy/vercel/README.md`](../deploy/vercel/README.md)).
 
 ---
 
@@ -326,72 +326,75 @@ the checklist exists so nothing is forgotten.
 
 ### 8.1 Server (`crates/orchext-server`)
 
-- [ ] **`/healthz` endpoint** — returns 200, no DB access.
-- [ ] **`/readyz` endpoint** — returns 200 if DB pool has a live
+- [x] **`/healthz` endpoint** — returns 200, no DB access.
+- [x] **`/readyz` endpoint** — returns 200 if DB pool has a live
       connection (`SELECT 1`); 503 otherwise.
-- [ ] **CORS layer (configurable, default deny)** — even though the
-      Vercel rewrite topology doesn't require CORS, add a configurable
-      `tower_http::cors` layer driven by `ORCHEXT_CORS_ALLOW_ORIGINS`.
-      Default empty (deny all). Self-hosters who serve the web app
-      from a different origin set it; we leave it empty.
-- [ ] **Confirm `SameSite=Lax`** on session and CSRF cookies in
-      `crates/orchext-server/src/session.rs` (or wherever cookies are
-      issued). `Strict` would break OAuth redirect flows.
-- [ ] **Structured logs** — already on `tracing`; verify request IDs
-      propagate so Fly's log feed is greppable.
+- [x] **CORS layer (configurable, default deny)** — `cors_layer()`
+      in `lib.rs` driven by `ORCHEXT_CORS_ALLOW_ORIGINS` (empty =
+      no layer mounted). Wired in `main.rs` after the router.
+- [x] **`SameSite=Lax`** on session and CSRF cookies confirmed at
+      `cookies.rs:50,60`. `Strict` would break OAuth redirect flows.
+- [x] **Request IDs in tracing** — `TraceLayer` in `main.rs`
+      generates a fresh UUID per request and inserts it into the
+      request span; every `tracing::*!` inside a handler inherits it.
 
 ### 8.2 Dockerfile (`crates/orchext-server/Dockerfile`)
 
-- [ ] **Cargo dependency caching** — split `cargo build` into a
-      "fetch deps with empty src" step so workspace code changes
-      don't rebuild the dependency graph. Drops rebuild time from
-      ~6 min to ~30 s.
-- [ ] **Pin `RUST_VERSION`** to current stable (currently 1.82,
-      verify against `rust-toolchain.toml` if present).
-- [ ] **Smaller runtime image** — keep `debian:bookworm-slim` but
-      audit installed packages (`ca-certificates` is the only
-      necessity).
-- [ ] **`HEALTHCHECK` instruction** in the Dockerfile pointing at
-      `/healthz` — useful for `docker compose` and any non-Fly
-      orchestrator.
+- [x] **Cargo dependency caching** — `cargo-chef` planner+builder
+      split. Workspace deps are baked into a layer that survives
+      code-only changes. Drops rebuild from ~6 min to ~30 s.
+- [x] **`RUST_VERSION` pinned to 1.95** to match local toolchain.
+- [x] **Runtime image audit** — `debian:bookworm-slim` with only
+      `ca-certificates` (TLS) + `wget` (HEALTHCHECK).
+- [x] **`HEALTHCHECK` instruction** points at `/healthz`. Used by
+      docker-compose and any non-Fly orchestrator; Fly ignores it
+      and uses the explicit check in `fly.toml`.
 
 ### 8.3 Compose (`crates/orchext-server/docker-compose.yml`)
 
-- [ ] **Re-enable the server healthcheck** (currently `disable: true`)
-      — install `wget` or `curl` in the runtime image OR shell out to
-      a `bash`/`/dev/tcp` probe, whichever is cleaner.
-- [ ] **Add `.env.example`** at the repo root or
-      `crates/orchext-server/.env.example` with every variable
-      named.
+- [x] **Server healthcheck re-enabled** — explicit `wget` probe
+      against `/healthz`, replacing the prior `disable: true`.
+- [x] **`.env.example` updated** — `ORCHEXT_CORS_ALLOW_ORIGINS`
+      added alongside the existing variables.
 - [ ] **Document a real-deploy variant** in a comment block:
       Caddy/Traefik in front, persistent volume on a real disk,
-      passwords from Docker secrets.
+      passwords from Docker secrets. *(Deferred — covered by this
+      document for SaaS, less urgent for self-host.)*
 
 ### 8.4 Deploy artifacts (`deploy/`)
 
-- [ ] `deploy/fly/orchext-prod.toml`
-- [ ] `deploy/fly/orchext-test.toml`
-- [ ] `deploy/vercel/README.md` documenting project setup
-      (rewrites, build command, env vars). Vercel itself is
-      configured via its UI/API — there's no in-repo equivalent of
-      `fly.toml` worth maintaining.
-- [ ] `deploy/README.md` linking back to this document and listing
+- [x] `deploy/fly/orchext-prod.toml`
+- [x] `deploy/fly/orchext-test.toml`
+- [x] `deploy/vercel/README.md` — rewrites configured in the Vercel
+      UI per project (no committed `vercel.json`; rewrites can't be
+      env-substituted, so the file would force both projects to point
+      at the same Fly app).
+- [x] `deploy/README.md` linking back to this document and listing
       first-time bring-up steps.
 
 ### 8.5 CI (`.github/workflows/`)
 
-- [ ] **`server.yml`** — on PR: `cargo fmt --check`, `cargo clippy
-      --workspace`, `cargo test --workspace` against a Postgres
-      service container.
-- [ ] **`web.yml`** — on PR: `npm ci && npm run build` in
-      `apps/web/`; later add `tsc --noEmit` and a lint step.
+- [x] **`server.yml`** — clippy + test against a Postgres 17
+      service container. `cargo fmt --check` *not* gated yet;
+      workspace has ~140 files of pre-existing rustfmt drift that
+      needs a one-shot cleanup before fmt becomes a useful gate.
+- [x] **`web.yml`** — `npm ci` + `npm run build` (which invokes
+      `wasm-pack` via `prebuild`). Path-filtered so it only runs
+      when `apps/web/` or the crypto crates change.
 - [ ] **Vercel auto-deploys** — production from `main`, test from
-      `develop` (or branch named in §3.1). Configured in Vercel UI;
-      no GH Actions needed.
+      `develop`. Configured in Vercel UI; no GH Actions needed.
+      *(Done at first-deploy time; not a code-side artifact.)*
 - [ ] **Fly deploy on tag** — `fly-deploy.yml` triggered on
-      `release/*` tags (or manual dispatch). Uses `flyctl deploy
-      --config deploy/fly/orchext-prod.toml`. Test env deploys on
-      every `main` push.
+      `release/*` tags. *(Deferred until release cadence justifies
+      automation; manual `flyctl deploy` is fine until then.)*
+
+### 8.6 Deferred follow-ups
+
+- [ ] **Workspace fmt cleanup** — one-shot `cargo fmt --all` to clear
+      ~140 files of drift, then add `cargo fmt --check` to CI.
+- [ ] **Clippy warning floor to zero** — three pre-existing
+      `unwrap_or_else(|_| Value::Null)` warnings in test helpers;
+      fix and switch CI to `-D warnings`.
 
 ---
 

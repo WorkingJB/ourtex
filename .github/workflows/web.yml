@@ -1,0 +1,63 @@
+name: web
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "apps/web/**"
+      - "crates/orchext-crypto-wasm/**"
+      - "crates/orchext-crypto/**"
+      - ".github/workflows/web.yml"
+  pull_request:
+    paths:
+      - "apps/web/**"
+      - "crates/orchext-crypto-wasm/**"
+      - "crates/orchext-crypto/**"
+      - ".github/workflows/web.yml"
+
+concurrency:
+  group: web-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain (wasm32)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache cargo for wasm build
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: web-wasm
+          # Only the crypto-wasm crate's deps matter here; scoping
+          # the cache reduces churn from server-side crate changes.
+          workspaces: crates/orchext-crypto-wasm
+
+      - name: Install wasm-pack
+        # `predev`/`prebuild` in apps/web/package.json invoke
+        # wasm-pack — must be on PATH before `npm run build`.
+        uses: jetli/wasm-pack-action@v0.4.0
+        with:
+          version: latest
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+
+      - name: npm ci
+        working-directory: apps/web
+        run: npm ci
+
+      - name: Build (wasm + tsc + vite)
+        working-directory: apps/web
+        run: npm run build
