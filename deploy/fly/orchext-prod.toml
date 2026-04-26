@@ -1,21 +1,23 @@
 # Fly.io configuration for the production orchext-server instance.
 #
-# Bring up:
+# Bring up (run from repo root):
 #   flyctl apps create orchext-prod --org <your-org>
 #   flyctl secrets set DATABASE_URL='postgres://…' --app orchext-prod
-#   flyctl deploy --config deploy/fly/orchext-prod.toml
+#   flyctl deploy . --config deploy/fly/orchext-prod.toml
 #
-# Day-to-day deploy (run from repo root so the build context is the
-# whole workspace — the Dockerfile expects to see every crate):
-#   flyctl deploy --config deploy/fly/orchext-prod.toml
+# Day-to-day deploy (run from repo root so `.` is the build context —
+# the Dockerfile expects to see every crate via `COPY . .`):
+#   flyctl deploy . --config deploy/fly/orchext-prod.toml
 #
 # See docs/DEPLOYMENT.md §4 for the full topology and rationale.
 
 app = "orchext-prod"
-primary_region = "iad"
+primary_region = "sjc"
 
 [build]
-  dockerfile = "crates/orchext-server/Dockerfile"
+  # Path is relative to this fly.toml; the build context is set to the
+  # repo root by passing `.` as the positional arg to `flyctl deploy`.
+  dockerfile = "../../crates/orchext-server/Dockerfile"
 
 [env]
   ORCHEXT_BIND = "0.0.0.0:8080"

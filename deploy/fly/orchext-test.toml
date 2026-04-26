@@ -7,16 +7,18 @@
 #     manual QA but not for end users.
 #   - Smaller DB pool (5 instead of 10).
 #
-# Bring up:
+# Bring up (run from repo root):
 #   flyctl apps create orchext-test --org <your-org>
 #   flyctl secrets set DATABASE_URL='postgres://…' --app orchext-test
-#   flyctl deploy --config deploy/fly/orchext-test.toml
+#   flyctl deploy . --config deploy/fly/orchext-test.toml
 
 app = "orchext-test"
-primary_region = "iad"
+primary_region = "sjc"
 
 [build]
-  dockerfile = "crates/orchext-server/Dockerfile"
+  # Path is relative to this fly.toml; the build context is set to the
+  # repo root by passing `.` as the positional arg to `flyctl deploy`.
+  dockerfile = "../../crates/orchext-server/Dockerfile"
 
 [env]
   ORCHEXT_BIND = "0.0.0.0:8080"

@@ -29,21 +29,22 @@ In order:
    Don't entangle DNS with Vercel or Fly.
 
 2. **Neon Postgres** — create two projects: `orchext-prod` and
-   `orchext-test`, both in AWS `us-east-1`. Grab the *direct*
+   `orchext-test`, both in AWS `us-west-2`. Grab the *direct*
    (unpooled) connection string for each — sqlx 0.8 has its own pool
    and doesn't need pgbouncer. See
    [`docs/DEPLOYMENT.md` §5.3](../docs/DEPLOYMENT.md#53-connection-string-discipline).
 
 3. **Fly apps** — create both apps and inject the Neon URLs as
-   secrets, then deploy:
+   secrets, then deploy. **Run from the repo root** so `.` is the
+   build context (the Dockerfile expects to see the entire workspace):
    ```bash
    flyctl apps create orchext-prod
    flyctl secrets set DATABASE_URL='postgres://...' --app orchext-prod
-   flyctl deploy --config deploy/fly/orchext-prod.toml
+   flyctl deploy . --config deploy/fly/orchext-prod.toml
 
    flyctl apps create orchext-test
    flyctl secrets set DATABASE_URL='postgres://...' --app orchext-test
-   flyctl deploy --config deploy/fly/orchext-test.toml
+   flyctl deploy . --config deploy/fly/orchext-test.toml
    ```
 
 4. **Vercel projects** — follow [`vercel/README.md`](vercel/README.md).
@@ -65,8 +66,8 @@ In order:
 |---|---|
 | Web app (prod) | Push to `main` — Vercel auto-deploys |
 | Web app (test) | Push to `develop` — Vercel auto-deploys |
-| Server (prod) | `flyctl deploy --config deploy/fly/orchext-prod.toml` |
-| Server (test) | `flyctl deploy --config deploy/fly/orchext-test.toml` |
+| Server (prod) | `flyctl deploy . --config deploy/fly/orchext-prod.toml` (run from repo root) |
+| Server (test) | `flyctl deploy . --config deploy/fly/orchext-test.toml` (run from repo root) |
 
 CI workflows in `.github/workflows/` cover build + test gates. The
 deploy step is manual/CLI for now — automating Fly deploys via tag

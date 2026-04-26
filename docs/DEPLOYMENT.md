@@ -136,7 +136,7 @@ A single binary, `orchext-server`, built from the existing
 |---|---|---|
 | Fly app | `orchext-prod` | `orchext-test` |
 | Public hostname | `orchext-prod.fly.dev` | `orchext-test.fly.dev` |
-| Region | `iad` (us-east) initially; pin to match Neon | same |
+| Region | `sjc` (us-west) — pinned to match Neon's `aws-us-west-2` | same |
 | VM size | `shared-cpu-1x`, 1024 MB | `shared-cpu-1x`, 256 MB |
 | Min instances | 1 (always-on) | 0 (auto-stop when idle) |
 | Healthcheck | `GET /healthz` — must return 200 | same |
@@ -213,7 +213,7 @@ database (`orchext`) that Fly's `orchext-server` connects to.
 |---|---|---|
 | Neon project | `orchext-prod` | `orchext-test` |
 | Plan | Launch ($19/mo) | Free tier or branch off prod |
-| Region | AWS `us-east-1` (must match Fly region) | same |
+| Region | AWS `us-west-2` (must match Fly region) | same |
 | Postgres version | 17 | 17 |
 | Storage cap (start) | 10 GB | 0.5 GB |
 | PITR window | 7 days | none on free tier |
@@ -244,10 +244,10 @@ connection string.
 
 Neon exposes two endpoints per branch:
 
-- **Direct (unpooled)** — host like `ep-xxx.us-east-1.aws.neon.tech`.
+- **Direct (unpooled)** — host like `ep-xxx.us-west-2.aws.neon.tech`.
   Standard Postgres, session-mode, supports prepared statements.
 - **Pooled (pgbouncer transaction mode)** — host like
-  `ep-xxx-pooler.us-east-1.aws.neon.tech`.
+  `ep-xxx-pooler.us-west-2.aws.neon.tech`.
 
 `orchext-server` uses sqlx 0.8 which has its own connection pool
 (`PgPoolOptions::new().max_connections(10)`). Long-running Rust
@@ -513,7 +513,7 @@ without code change beyond config.
   third-party MCP clients connect from outside the browser. Not yet.
 - **Sentry / APM / synthetic monitors** — added when error volume
   justifies the noise floor.
-- **Multi-region deploy** — single us-east region until latency or
+- **Multi-region deploy** — single us-west region until latency or
   resilience needs make it worth the complexity.
 - **Read replicas, sharding, etc.** — single Postgres until ≥50k
   users.
@@ -534,6 +534,7 @@ without code change beyond config.
 | 2026-04-26 | Neon direct (unpooled) endpoint, not pgbouncer | sqlx 0.8 has its own pool; transaction-mode pooling breaks prepared-statement caching (§5.3). |
 | 2026-04-26 | Skip HA Postgres at launch | Single-node + 7-day PITR is enough until paid users or revenue depends on uptime (§9). |
 | 2026-04-26 | API hostname not yet published | No third-party MCP clients yet; deferring `api.orchext.ai` keeps the cookie story simpler (§13). |
+| 2026-04-26 | Region pinned to us-west (`sjc` + `aws-us-west-2`) instead of us-east | Neon project was created in `us-west-2` first; co-locating Fly avoids cross-coast latency. Reversible by changing `primary_region` in both `fly.toml`s and re-creating Neon projects. |
 
 Update this log whenever a vendor, topology, or config decision
 changes. Each row is the smallest-possible "why" — if the decision
