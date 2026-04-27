@@ -9,6 +9,7 @@ import {
   SEED_TYPES,
 } from "./api";
 import { buildSource, DocDetail, parseSource } from "./docSource";
+import { RichTextEditor } from "./RichTextEditor";
 
 type Load<T> =
   | { state: "loading" }
@@ -665,12 +666,10 @@ function DocEditor({
       </div>
 
       <Field label="Content">
-        <textarea
+        <RichTextEditor
           value={body}
-          onChange={(e) => setBody(e.target.value)}
-          rows={20}
-          placeholder="Just write — line breaks and paragraphs work as expected. Markdown formatting (**bold**, lists, links) is supported but optional."
-          className="w-full px-3 py-2 border border-neutral-300 rounded text-sm leading-relaxed"
+          onChange={setBody}
+          placeholder="Just write — apply formatting from the toolbar above. Switch to Advanced to edit raw markdown."
         />
       </Field>
 
