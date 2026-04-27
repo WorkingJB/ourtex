@@ -136,30 +136,40 @@ async fn run_wipe(skip_confirm: bool) -> Result<(), Box<dyn std::error::Error>> 
 
     // Pre-flight row counts so the operator sees the blast radius.
     // `accounts` and `tenants` are the cascade roots — every other row
-    // is reachable from one of them.
-    let counts: Result<(i64, i64, i64), sqlx::Error> = sqlx::query_as(
-        "SELECT \
-            (SELECT COUNT(*) FROM accounts), \
-            (SELECT COUNT(*) FROM tenants), \
-            (SELECT COUNT(*) FROM organizations)",
+    // is reachable from one of them. The `organizations` count is
+    // best-effort: a partially-migrated DB (no Slice 1 migration yet)
+    // still has accounts + tenants but not organizations, and we
+    // shouldn't refuse the wipe over a missing optional table.
+    let core_counts: Result<(i64, i64), sqlx::Error> = sqlx::query_as(
+        "SELECT (SELECT COUNT(*) FROM accounts), (SELECT COUNT(*) FROM tenants)",
     )
     .fetch_one(&db)
     .await;
-
-    match counts {
-        Ok((accts, tens, orgs)) => {
-            eprintln!(
-                "Will TRUNCATE: {accts} account(s), {tens} tenant(s), {orgs} org(s) \
-                 (cascading to all dependents)."
-            );
-        }
+    let (accts, tens) = match core_counts {
+        Ok(pair) => pair,
         Err(e) => {
             eprintln!(
-                "Could not read row counts ({e}). The DB might be uninitialized — \
-                 run the server once first to apply migrations, then retry the wipe."
+                "Could not read row counts from accounts/tenants ({e}). \
+                 The DB looks uninitialized — run the server once first to \
+                 apply migrations, then retry the wipe."
             );
             return Err(Box::new(e));
         }
+    };
+    let orgs: Option<i64> = sqlx::query_as::<_, (i64,)>("SELECT COUNT(*) FROM organizations")
+        .fetch_one(&db)
+        .await
+        .ok()
+        .map(|(c,)| c);
+    match orgs {
+        Some(c) => eprintln!(
+            "Will TRUNCATE: {accts} account(s), {tens} tenant(s), {c} org(s) \
+             (cascading to all dependents)."
+        ),
+        None => eprintln!(
+            "Will TRUNCATE: {accts} account(s), {tens} tenant(s) \
+             (organizations table absent — pre-Slice-1 schema; cascading to all dependents)."
+        ),
     }
 
     if !skip_confirm {
