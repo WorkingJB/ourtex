@@ -1,9 +1,22 @@
-import { useEffect, useState } from "react";
-import { api, IssuedToken, TokenInfo, VISIBILITIES } from "./api";
+import { useEffect, useMemo, useState } from "react";
+import {
+  api,
+  IssuedToken,
+  ORG_VISIBILITIES,
+  PERSONAL_VISIBILITIES,
+  TokenInfo,
+} from "./api";
+import { Context } from "./OrgRail";
 
 export function TokensView({
+  ctx,
   onMutated,
 }: {
+  /// Active context. The IssueForm offers a context-aware visibility
+  /// scope set so org workspaces don't surface `work`/`personal` (no
+  /// such docs there) and personal/local vaults don't surface `org`
+  /// (no org membership). Phase 3 platform 4-layer model.
+  ctx?: Context;
   onMutated?: () => void | Promise<void>;
 }) {
   const [tokens, setTokens] = useState<TokenInfo[]>([]);
@@ -37,6 +50,7 @@ export function TokensView({
 
       {issuing && (
         <IssueForm
+          ctxKind={ctx?.kind ?? "local"}
           onDone={async (t) => {
             setIssuing(false);
             setJustIssued(t);
@@ -145,18 +159,31 @@ function fmtDate(iso: string): string {
 }
 
 function IssueForm({
+  ctxKind,
   onDone,
   onCancel,
 }: {
+  ctxKind: Context["kind"];
   onDone: (t: IssuedToken) => void | Promise<void>;
   onCancel: () => void;
 }) {
   const [label, setLabel] = useState("Claude Desktop");
-  const [scope, setScope] = useState<Record<string, boolean>>({
-    work: true,
-    public: true,
-    personal: false,
-    private: false,
+  const isOrg = ctxKind === "org";
+  const visibilityChoices = useMemo<readonly string[]>(
+    () =>
+      isOrg
+        ? ["public", ...ORG_VISIBILITIES]
+        : ["public", ...PERSONAL_VISIBILITIES],
+    [isOrg]
+  );
+  const [scope, setScope] = useState<Record<string, boolean>>(() => {
+    const init: Record<string, boolean> = {};
+    for (const v of visibilityChoices) {
+      init[v] = isOrg
+        ? v === "org" || v === "public"
+        : v === "work" || v === "public";
+    }
+    return init;
   });
   const [ttlDays, setTtlDays] = useState<string>("90");
   const [busy, setBusy] = useState(false);
@@ -222,7 +249,7 @@ function IssueForm({
       <div className="mb-3">
         <div className="text-xs text-neutral-600 mb-1">Scope</div>
         <div className="flex flex-wrap gap-3">
-          {VISIBILITIES.map((v) => (
+          {visibilityChoices.map((v) => (
             <label key={v} className="flex items-center gap-2 text-sm">
               <input
                 type="checkbox"

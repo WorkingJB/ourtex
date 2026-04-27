@@ -1,11 +1,12 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   api,
   ApiFailure,
   IssueTokenResponse,
   Membership,
+  ORG_VISIBILITIES,
+  PERSONAL_VISIBILITIES,
   PublicToken,
-  VISIBILITIES,
 } from "./api";
 
 function errMessage(e: unknown): string {
@@ -49,6 +50,7 @@ export function TokensView({ tenant }: { tenant: Membership }) {
       {issuing && (
         <IssueForm
           tenantId={tenant.tenant_id}
+          tenantKind={tenant.kind}
           onDone={async (t) => {
             setIssuing(false);
             setJustIssued(t);
@@ -167,19 +169,41 @@ function fmtDate(iso: string): string {
 
 function IssueForm({
   tenantId,
+  tenantKind,
   onDone,
   onCancel,
 }: {
   tenantId: string;
+  /// `"personal"` (or `"local"` on desktop, but web only sees personal /
+  /// org tenants) → offer the personal-vault visibility set.
+  /// `"org"` → offer `private` + `org` only; `personal` and `work`
+  /// don't exist as visibility values inside an org workspace.
+  tenantKind: string;
   onDone: (t: IssueTokenResponse) => void | Promise<void>;
   onCancel: () => void;
 }) {
   const [label, setLabel] = useState("Claude Web");
-  const [scope, setScope] = useState<Record<string, boolean>>({
-    work: true,
-    public: true,
-    personal: false,
-    private: false,
+  // Visibility set + defaults are context-aware. Org workspaces only
+  // contain docs tagged `private` or `org`, so a token issued there
+  // with `work`/`personal` checked would just match nothing — and
+  // missing the `org` checkbox altogether means no token could read
+  // shared org docs at all (Phase 3 platform 4-layer model).
+  const isOrg = tenantKind === "org";
+  const visibilityChoices = useMemo<readonly string[]>(
+    () =>
+      isOrg
+        ? ["public", ...ORG_VISIBILITIES]
+        : ["public", ...PERSONAL_VISIBILITIES],
+    [isOrg]
+  );
+  const [scope, setScope] = useState<Record<string, boolean>>(() => {
+    const init: Record<string, boolean> = {};
+    for (const v of visibilityChoices) {
+      init[v] = isOrg
+        ? v === "org" || v === "public"
+        : v === "work" || v === "public";
+    }
+    return init;
   });
   const [ttlDays, setTtlDays] = useState<string>("90");
   const [busy, setBusy] = useState(false);
@@ -246,7 +270,7 @@ function IssueForm({
       <div className="mb-3">
         <div className="text-xs text-neutral-600 mb-1">Scope</div>
         <div className="flex flex-wrap gap-3">
-          {VISIBILITIES.map((v) => (
+          {visibilityChoices.map((v) => (
             <label key={v} className="flex items-center gap-2 text-sm">
               <input
                 type="checkbox"
