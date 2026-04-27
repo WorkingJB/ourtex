@@ -9,19 +9,15 @@ import {
 } from "./api";
 import { SessionProfile } from "./session";
 import { LoginView } from "./LoginView";
-import { DocumentsView } from "./DocumentsView";
-import { TokensView } from "./TokensView";
-import { AuditView } from "./AuditView";
-import { ProposalsView } from "./ProposalsView";
 import { UnlockView } from "./UnlockView";
 import { ConsentView } from "./ConsentView";
 import { Heartbeat, startHeartbeat } from "./heartbeat";
 import { buildContexts, Context, OrgRail } from "./OrgRail";
 import { AwaitingApprovalView } from "./AwaitingApprovalView";
-import { MembersView } from "./MembersView";
-import { OrgSettingsView } from "./OrgSettingsView";
+import { DocumentsTab } from "./DocumentsTab";
+import { SettingsView } from "./SettingsView";
 
-type View = "documents" | "proposals" | "tokens" | "audit" | "members" | "settings";
+type View = "documents" | "settings";
 
 // Top-level auth state. `bootstrapping` is the brief window between
 // app load and the `/v1/auth/me` probe completing — don't render
@@ -137,11 +133,12 @@ function MainApp() {
     setProposalsFocus(null);
   }, [active?.tenantId]);
 
-  // Clear the proposals doc-focus whenever the user manually
-  // navigates away from Proposals — keeps it from hanging around
-  // for the next deep-link.
+  // Clear the proposals doc-focus whenever the user navigates away
+  // from Documents — keeps a deep-link from leaking into the next
+  // visit. (Proposals lives as a sub-tab inside DocumentsTab now;
+  // the wrapper clears focus locally when its sub-tab switches.)
   useEffect(() => {
-    if (view !== "proposals") setProposalsFocus(null);
+    if (view !== "documents") setProposalsFocus(null);
   }, [view]);
 
   // Classify the tenant whenever the caller flips to a new one. Seeded
@@ -335,41 +332,10 @@ function MainApp() {
               onClick={() => setView("documents")}
             />
             <NavBtn
-              label="Proposals"
-              active={view === "proposals"}
-              onClick={() => setView("proposals")}
+              label="Settings"
+              active={view === "settings"}
+              onClick={() => setView("settings")}
             />
-            <NavBtn
-              label="Tokens"
-              active={view === "tokens"}
-              onClick={() => setView("tokens")}
-            />
-            <NavBtn
-              label="Audit"
-              active={view === "audit"}
-              onClick={() => setView("audit")}
-            />
-            {/* Admin/owner-only org-management views. Only mounted
-                when the active context is an org tenant — personal
-                vault has no members or org-settings concept. */}
-            {active.kind === "org" &&
-              (active.role === "owner" || active.role === "admin") && (
-                <>
-                  <div className="mt-3 mb-1 text-[10px] uppercase tracking-wider text-neutral-400 px-3">
-                    Admin
-                  </div>
-                  <NavBtn
-                    label="Members"
-                    active={view === "members"}
-                    onClick={() => setView("members")}
-                  />
-                  <NavBtn
-                    label="Settings"
-                    active={view === "settings"}
-                    onClick={() => setView("settings")}
-                  />
-                </>
-              )}
           </nav>
         )}
         <main className="flex-1 min-w-0 bg-neutral-50">
@@ -387,62 +353,44 @@ function MainApp() {
             />
           )}
           {workspace.kind === "ready" && view === "documents" && (
-            <DocumentsView
+            <DocumentsTab
               tenant={contextToMembership(active)}
-              onSwitchToProposals={(docId) => {
-                setProposalsFocus(docId);
-                setView("proposals");
-              }}
+              proposalsFocus={proposalsFocus}
+              onSetProposalsFocus={setProposalsFocus}
             />
           )}
-          {workspace.kind === "ready" && view === "proposals" && (
-            <ProposalsView
+          {workspace.kind === "ready" && view === "settings" && (
+            <SettingsView
               tenant={contextToMembership(active)}
-              focusDocId={proposalsFocus}
-            />
-          )}
-          {workspace.kind === "ready" && view === "tokens" && (
-            <TokensView tenant={contextToMembership(active)} />
-          )}
-          {workspace.kind === "ready" && view === "audit" && (
-            <AuditView tenant={contextToMembership(active)} />
-          )}
-          {workspace.kind === "ready" &&
-            view === "members" &&
-            active.kind === "org" && <MembersView ctx={active} />}
-          {workspace.kind === "ready" &&
-            view === "settings" &&
-            active.kind === "org" && (
-              <OrgSettingsView
-                ctx={active}
-                onUpdated={(updated) => {
-                  // Live-update the rail entry so the new name/logo
-                  // shows immediately without refetching.
-                  setContexts((prev) => {
-                    if (prev.kind !== "ready") return prev;
-                    const next = prev.contexts.map((c) =>
-                      c.kind === "org" && c.orgId === updated.id
-                        ? {
-                            ...c,
-                            name: updated.name,
-                            logoUrl: updated.logo_url,
-                          }
-                        : c
-                    );
-                    return { ...prev, contexts: next };
-                  });
-                  setActive((prev) =>
-                    prev && prev.kind === "org" && prev.orgId === updated.id
+              ctx={active}
+              onOrgUpdated={(updated) => {
+                // Live-update the rail entry so the new name/logo
+                // shows immediately without refetching.
+                setContexts((prev) => {
+                  if (prev.kind !== "ready") return prev;
+                  const next = prev.contexts.map((c) =>
+                    c.kind === "org" && c.orgId === updated.id
                       ? {
-                          ...prev,
+                          ...c,
                           name: updated.name,
                           logoUrl: updated.logo_url,
                         }
-                      : prev
+                      : c
                   );
-                }}
-              />
-            )}
+                  return { ...prev, contexts: next };
+                });
+                setActive((prev) =>
+                  prev && prev.kind === "org" && prev.orgId === updated.id
+                    ? {
+                        ...prev,
+                        name: updated.name,
+                        logoUrl: updated.logo_url,
+                      }
+                    : prev
+                );
+              }}
+            />
+          )}
         </main>
       </div>
     </div>
