@@ -98,16 +98,21 @@ export function DocumentsView({ tenant }: { tenant: Membership }) {
 
   const visible = typeFilter ? items.filter((i) => i.type_ === typeFilter) : items;
 
+  // Default visibility for a "+ New" doc, computed from the active
+  // section so the user isn't fighting the form. In the org-context
+  // section, we assume the user is creating shared org content; in
+  // "My context" or personal vault, default to private.
+  const defaultVisibilityForNew: string =
+    isOrg && section === "org" ? "org" : "private";
+
   return (
     <div className="flex h-full min-h-0">
-      {/* Types sidebar */}
-      <aside className="w-48 border-r border-neutral-200 bg-white overflow-y-auto">
-        {/* Org workspace gets a section toggle so the user knows
-            whether they're looking at "their notes for the org" or
-            "the org's shared context". Personal vault doesn't need
-            it — there's only one effective section. */}
-        {isOrg && (
-          <div className="p-2 border-b border-neutral-100">
+      {/* Section sidebar — only in org workspace. Personal vault has
+          one effective section, so no nav needed. Types moved to a
+          dropdown in the doc list header (one filter per layer). */}
+      {isOrg && (
+        <aside className="w-44 border-r border-neutral-200 bg-white overflow-y-auto">
+          <div className="p-2">
             <div className="text-xs uppercase tracking-wider text-neutral-500 mb-1 px-1">
               Section
             </div>
@@ -121,11 +126,9 @@ export function DocumentsView({ tenant }: { tenant: Membership }) {
               }}
             />
             <SectionBtn
-              label="My notes"
+              label="My context"
               active={section === "mine"}
-              count={
-                allItems.filter((i) => i.visibility === "private").length
-              }
+              count={allItems.filter((i) => i.visibility === "private").length}
               onClick={() => {
                 setSection("mine");
                 setTypeFilter(null);
@@ -141,60 +144,43 @@ export function DocumentsView({ tenant }: { tenant: Membership }) {
               }}
             />
           </div>
-        )}
-        <div className="p-2">
-          <button
-            onClick={() => setTypeFilter(null)}
-            className={
-              "w-full text-left text-sm px-3 py-1.5 rounded " +
-              (typeFilter === null
-                ? "bg-brand-50 text-brand-700 font-medium"
-                : "text-neutral-700 hover:bg-neutral-100")
-            }
-          >
-            All ({items.length})
-          </button>
-        </div>
-        <div className="px-2 pb-2 text-xs uppercase tracking-wider text-neutral-500 mt-2">
-          Types
-        </div>
-        {types.map((t) => {
-          const count = items.filter((i) => i.type_ === t).length;
-          return (
-            <button
-              key={t}
-              onClick={() => setTypeFilter(t)}
-              className={
-                "w-full text-left text-sm px-3 py-1.5 " +
-                (typeFilter === t
-                  ? "bg-brand-50 text-brand-700 font-medium"
-                  : "text-neutral-700 hover:bg-neutral-100")
-              }
-            >
-              {t}{" "}
-              <span className="text-neutral-400 text-xs">({count})</span>
-            </button>
-          );
-        })}
-      </aside>
+        </aside>
+      )}
 
       {/* Doc list */}
       <section className="w-80 border-r border-neutral-200 bg-white overflow-y-auto">
-        <div className="p-2 border-b border-neutral-200 flex items-center justify-between">
-          <div className="text-sm text-neutral-600">
-            {entries.state === "loading"
-              ? "Loading…"
-              : `${visible.length} document${visible.length === 1 ? "" : "s"}`}
+        <div className="p-2 border-b border-neutral-200 space-y-2">
+          <div className="flex items-center justify-between">
+            <div className="text-sm text-neutral-600">
+              {entries.state === "loading"
+                ? "Loading…"
+                : `${visible.length} document${visible.length === 1 ? "" : "s"}`}
+            </div>
+            <button
+              onClick={() => {
+                setSelectedId(null);
+                setCreating(true);
+              }}
+              className="text-sm text-brand-600 hover:text-brand-700"
+            >
+              + New
+            </button>
           </div>
-          <button
-            onClick={() => {
-              setSelectedId(null);
-              setCreating(true);
-            }}
-            className="text-sm text-brand-600 hover:text-brand-700"
+          <select
+            value={typeFilter ?? ""}
+            onChange={(e) => setTypeFilter(e.target.value || null)}
+            className="w-full px-2 py-1 border border-neutral-300 rounded text-xs bg-white"
           >
-            + New
-          </button>
+            <option value="">All types ({items.length})</option>
+            {types.map((t) => {
+              const count = items.filter((i) => i.type_ === t).length;
+              return (
+                <option key={t} value={t}>
+                  {t} ({count})
+                </option>
+              );
+            })}
+          </select>
         </div>
         {entries.state === "error" && (
           <div className="p-4 text-sm text-red-600">{entries.message}</div>
@@ -234,12 +220,13 @@ export function DocumentsView({ tenant }: { tenant: Membership }) {
       <section className="flex-1 min-w-0 overflow-y-auto">
         {creating && (
           <DocEditor
-            key={`__new__:${typeFilter ?? ""}`}
+            key={`__new__:${typeFilter ?? ""}:${defaultVisibilityForNew}`}
             tenantId={tenant.tenant_id}
             tenantName={tenant.name}
             tenantKind={tenant.kind}
             initial={null}
             defaultType={typeFilter ?? undefined}
+            defaultVisibility={defaultVisibilityForNew}
             onSaved={async (d) => {
               await refreshList();
               setCreating(false);
@@ -337,6 +324,7 @@ function DocEditor({
   tenantKind,
   initial,
   defaultType,
+  defaultVisibility,
   onSaved,
   onDeleted,
   onCancel,
@@ -351,6 +339,11 @@ function DocEditor({
   /// in a new-doc form already typed as "relationships"). Ignored
   /// when editing an existing doc.
   defaultType?: string;
+  /// When creating a new doc, pre-fill the visibility field. Comes
+  /// from the parent's active section (org section → "org", everywhere
+  /// else → "private") so users don't have to flip the dropdown after
+  /// every "+ New". Ignored when editing an existing doc.
+  defaultVisibility?: string;
   onSaved: (d: DocDetail) => Promise<void> | void;
   onDeleted?: () => Promise<void> | void;
   onCancel?: () => void;
@@ -365,13 +358,12 @@ function DocEditor({
     ? ORG_VISIBILITIES
     : PERSONAL_VISIBILITIES;
   const isNew = initial === null;
-  const defaultVisibility = isOrg ? "private" : "private";
   const [id, setId] = useState(initial?.id ?? "");
   const [type, setType] = useState(
     initial?.type ?? defaultType ?? "relationships"
   );
   const [visibility, setVisibility] = useState(
-    initial?.visibility ?? defaultVisibility
+    initial?.visibility ?? defaultVisibility ?? "private"
   );
   const [tags, setTags] = useState((initial?.tags ?? []).join(", "));
   const [sourceField, setSourceField] = useState(initial?.source ?? "");

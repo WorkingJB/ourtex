@@ -216,6 +216,10 @@ export const SEED_TYPES = [
   "preferences",
   "domains",
   "decisions",
+  // `org` is the seed type for org-shared business context (brand,
+  // mission, top-level goals). Visible to all members; writes gated
+  // by `org_editor`-or-higher (D17g).
+  "org",
 ] as const;
 
 // ---------- Tokens ----------
