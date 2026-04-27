@@ -18,8 +18,10 @@ import { ConsentView } from "./ConsentView";
 import { Heartbeat, startHeartbeat } from "./heartbeat";
 import { buildContexts, Context, OrgRail } from "./OrgRail";
 import { AwaitingApprovalView } from "./AwaitingApprovalView";
+import { MembersView } from "./MembersView";
+import { OrgSettingsView } from "./OrgSettingsView";
 
-type View = "documents" | "proposals" | "tokens" | "audit";
+type View = "documents" | "proposals" | "tokens" | "audit" | "members" | "settings";
 
 // Top-level auth state. `bootstrapping` is the brief window between
 // app load and the `/v1/auth/me` probe completing — don't render
@@ -295,6 +297,27 @@ function MainApp() {
               active={view === "audit"}
               onClick={() => setView("audit")}
             />
+            {/* Admin/owner-only org-management views. Only mounted
+                when the active context is an org tenant — personal
+                vault has no members or org-settings concept. */}
+            {active.kind === "org" &&
+              (active.role === "owner" || active.role === "admin") && (
+                <>
+                  <div className="mt-3 mb-1 text-[10px] uppercase tracking-wider text-neutral-400 px-3">
+                    Admin
+                  </div>
+                  <NavBtn
+                    label="Members"
+                    active={view === "members"}
+                    onClick={() => setView("members")}
+                  />
+                  <NavBtn
+                    label="Settings"
+                    active={view === "settings"}
+                    onClick={() => setView("settings")}
+                  />
+                </>
+              )}
           </nav>
         )}
         <main className="flex-1 min-w-0 bg-neutral-50">
@@ -323,6 +346,42 @@ function MainApp() {
           {workspace.kind === "ready" && view === "audit" && (
             <AuditView tenant={contextToMembership(active)} />
           )}
+          {workspace.kind === "ready" &&
+            view === "members" &&
+            active.kind === "org" && <MembersView ctx={active} />}
+          {workspace.kind === "ready" &&
+            view === "settings" &&
+            active.kind === "org" && (
+              <OrgSettingsView
+                ctx={active}
+                onUpdated={(updated) => {
+                  // Live-update the rail entry so the new name/logo
+                  // shows immediately without refetching.
+                  setContexts((prev) => {
+                    if (prev.kind !== "ready") return prev;
+                    const next = prev.contexts.map((c) =>
+                      c.kind === "org" && c.orgId === updated.id
+                        ? {
+                            ...c,
+                            name: updated.name,
+                            logoUrl: updated.logo_url,
+                          }
+                        : c
+                    );
+                    return { ...prev, contexts: next };
+                  });
+                  setActive((prev) =>
+                    prev && prev.kind === "org" && prev.orgId === updated.id
+                      ? {
+                          ...prev,
+                          name: updated.name,
+                          logoUrl: updated.logo_url,
+                        }
+                      : prev
+                  );
+                }}
+              />
+            )}
         </main>
       </div>
     </div>
