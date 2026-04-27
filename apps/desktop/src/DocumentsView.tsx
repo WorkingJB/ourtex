@@ -167,8 +167,9 @@ export function DocumentsView({
         )}
         {creating && (
           <DocEditor
-            key="__new__"
+            key={`__new__:${typeFilter ?? ""}`}
             initial={null}
+            defaultType={typeFilter ?? undefined}
             onSaved={async (d) => {
               await refreshList();
               setCreating(false);
@@ -226,17 +227,23 @@ function VisibilityChip({ v }: { v: string }) {
 
 function DocEditor({
   initial,
+  defaultType,
   onSaved,
   onDeleted,
   onCancel,
 }: {
   initial: DocDetail | null;
+  /// When creating a new doc, pre-fill the type field with this
+  /// (typically the active type filter in the list view).
+  defaultType?: string;
   onSaved: (d: DocDetail) => Promise<void> | void;
   onDeleted?: () => Promise<void> | void;
   onCancel?: () => void;
 }) {
   const [id, setId] = useState(initial?.id ?? "");
-  const [type, setType] = useState(initial?.type ?? "relationships");
+  const [type, setType] = useState(
+    initial?.type ?? defaultType ?? "relationships"
+  );
   const [visibility, setVisibility] = useState(initial?.visibility ?? "work");
   const [tags, setTags] = useState((initial?.tags ?? []).join(", "));
   const [source, setSource] = useState(initial?.source ?? "");

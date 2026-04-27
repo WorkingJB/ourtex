@@ -234,11 +234,12 @@ export function DocumentsView({ tenant }: { tenant: Membership }) {
       <section className="flex-1 min-w-0 overflow-y-auto">
         {creating && (
           <DocEditor
-            key="__new__"
+            key={`__new__:${typeFilter ?? ""}`}
             tenantId={tenant.tenant_id}
             tenantName={tenant.name}
             tenantKind={tenant.kind}
             initial={null}
+            defaultType={typeFilter ?? undefined}
             onSaved={async (d) => {
               await refreshList();
               setCreating(false);
@@ -335,6 +336,7 @@ function DocEditor({
   tenantName,
   tenantKind,
   initial,
+  defaultType,
   onSaved,
   onDeleted,
   onCancel,
@@ -343,6 +345,12 @@ function DocEditor({
   tenantName: string;
   tenantKind: string;
   initial: DocDetail | null;
+  /// When creating a new doc, pre-fill the type field with this
+  /// (typically the active type-filter in the parent list view, so a
+  /// user clicking "+ New" while filtered to "relationships" lands
+  /// in a new-doc form already typed as "relationships"). Ignored
+  /// when editing an existing doc.
+  defaultType?: string;
   onSaved: (d: DocDetail) => Promise<void> | void;
   onDeleted?: () => Promise<void> | void;
   onCancel?: () => void;
@@ -359,7 +367,9 @@ function DocEditor({
   const isNew = initial === null;
   const defaultVisibility = isOrg ? "private" : "private";
   const [id, setId] = useState(initial?.id ?? "");
-  const [type, setType] = useState(initial?.type ?? "relationships");
+  const [type, setType] = useState(
+    initial?.type ?? defaultType ?? "relationships"
+  );
   const [visibility, setVisibility] = useState(
     initial?.visibility ?? defaultVisibility
   );
