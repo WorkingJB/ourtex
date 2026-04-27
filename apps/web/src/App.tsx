@@ -1,8 +1,7 @@
 import { useEffect, useState } from "react";
-import { api, ApiFailure, CryptoState, Membership } from "./api";
+import { api, ApiFailure, CryptoState, Membership, OrgsResponse } from "./api";
 import { SessionProfile } from "./session";
 import { LoginView } from "./LoginView";
-import { TenantPicker } from "./TenantPicker";
 import { DocumentsView } from "./DocumentsView";
 import { TokensView } from "./TokensView";
 import { AuditView } from "./AuditView";
@@ -10,6 +9,7 @@ import { ProposalsView } from "./ProposalsView";
 import { UnlockView } from "./UnlockView";
 import { ConsentView } from "./ConsentView";
 import { Heartbeat, startHeartbeat } from "./heartbeat";
+import { buildContexts, Context, OrgRail } from "./OrgRail";
 
 type View = "documents" | "proposals" | "tokens" | "audit";
 
@@ -31,9 +31,17 @@ type WorkspaceState =
   | { kind: "ready"; contentKey: string | null }
   | { kind: "locked" };
 
+// Contexts state — drives the org rail. `loading` covers the initial
+// fetch; `ready` is the resolved list. The rail is always rendered in
+// `ready`, even when the list is empty (the awaiting-approval gate
+// covers that branch in a follow-up commit).
+type ContextsState =
+  | { kind: "loading" }
+  | { kind: "ready"; contexts: Context[]; pendingCount: number };
+
 // OAuth consent surface lives at its own path. We detect it once at
 // mount and short-circuit the normal app shell so the user lands on
-// the consent prompt without seeing the tenant picker / docs view.
+// the consent prompt without seeing the rail / docs view.
 const IS_CONSENT_ROUTE = window.location.pathname === "/oauth/authorize";
 
 export default function App() {
@@ -43,7 +51,8 @@ export default function App() {
 
 function MainApp() {
   const [auth, setAuth] = useState<AuthState>({ kind: "bootstrapping" });
-  const [tenant, setTenant] = useState<Membership | null>(null);
+  const [contexts, setContexts] = useState<ContextsState>({ kind: "loading" });
+  const [active, setActive] = useState<Context | null>(null);
   const [workspace, setWorkspace] = useState<WorkspaceState>({
     kind: "checking",
   });
@@ -75,21 +84,51 @@ function MainApp() {
     };
   }, []);
 
-  // Hop back to documents when the tenant changes so a "tokens" or
-  // "audit" selection from a previous tenant doesn't stick.
+  // Once authenticated, fetch the rail data: tenants() for the
+  // personal vault, orgsList() for any org memberships + pending
+  // signup count. Run in parallel — both are cookie-authed reads.
+  useEffect(() => {
+    if (auth.kind !== "authenticated") return;
+    let cancelled = false;
+    setContexts({ kind: "loading" });
+    Promise.all([api.tenants(), api.orgsList()])
+      .then(([t, o]: [{ memberships: Membership[] }, OrgsResponse]) => {
+        if (cancelled) return;
+        const ctxs = buildContexts(t.memberships, o.memberships);
+        setContexts({
+          kind: "ready",
+          contexts: ctxs,
+          pendingCount: o.pending.length,
+        });
+        // Default-select first context (personal first by buildContexts
+        // ordering) once on first load.
+        if (ctxs.length > 0) setActive((prev) => prev ?? ctxs[0]);
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setContexts({ kind: "ready", contexts: [], pendingCount: 0 });
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [auth.kind]);
+
+  // Hop back to documents when the active context changes so a
+  // "tokens" or "audit" selection from a previous one doesn't stick.
   useEffect(() => {
     setView("documents");
-  }, [tenant?.tenant_id]);
+  }, [active?.tenantId]);
 
   // Classify the tenant whenever the caller flips to a new one. Seeded
   // tenants without a local content key land in UnlockView; plaintext
   // and already-keyed tenants go straight through.
   useEffect(() => {
-    if (!tenant) return;
+    if (!active) return;
     let cancelled = false;
     setWorkspace({ kind: "checking" });
     api
-      .cryptoState(tenant.tenant_id)
+      .cryptoState(active.tenantId)
       .then((state: CryptoState) => {
         if (cancelled) return;
         setWorkspace(
@@ -102,26 +141,26 @@ function MainApp() {
     return () => {
       cancelled = true;
     };
-  }, [tenant]);
+  }, [active]);
 
   // Heartbeat lifecycle: one handle per unlocked workspace. Cancelled
-  // whenever the tenant or session changes, or on teardown.
+  // whenever the active context or session changes, or on teardown.
   useEffect(() => {
-    if (workspace.kind !== "ready" || !workspace.contentKey || !tenant) {
+    if (workspace.kind !== "ready" || !workspace.contentKey || !active) {
       return;
     }
-    const hb = startHeartbeat(tenant.tenant_id, workspace.contentKey);
+    const hb = startHeartbeat(active.tenantId, workspace.contentKey);
     setHeartbeatHandle(hb);
     return () => {
       hb.stop();
       setHeartbeatHandle(null);
     };
-  }, [workspace, tenant]);
+  }, [workspace, active]);
 
   async function logout() {
     heartbeat?.stop();
     try {
-      if (tenant) await api.revokeSessionKey(tenant.tenant_id);
+      if (active) await api.revokeSessionKey(active.tenantId);
     } catch {
       // best-effort; session is about to be revoked anyway
     }
@@ -133,16 +172,18 @@ function MainApp() {
       }
     }
     setAuth({ kind: "anonymous" });
-    setTenant(null);
+    setActive(null);
+    setContexts({ kind: "loading" });
     setWorkspace({ kind: "checking" });
   }
 
-  function switchTenant() {
+  function selectContext(ctx: Context) {
+    if (ctx.tenantId === active?.tenantId) return;
     heartbeat?.stop();
-    if (tenant) {
-      api.revokeSessionKey(tenant.tenant_id).catch(() => undefined);
+    if (active) {
+      api.revokeSessionKey(active.tenantId).catch(() => undefined);
     }
-    setTenant(null);
+    setActive(ctx);
     setWorkspace({ kind: "checking" });
   }
 
@@ -162,8 +203,22 @@ function MainApp() {
       />
     );
   }
-  if (!tenant) {
-    return <TenantPicker onPicked={setTenant} />;
+  if (contexts.kind === "loading") {
+    return (
+      <div className="h-full flex items-center justify-center text-neutral-500">
+        Loading workspaces…
+      </div>
+    );
+  }
+  // Awaiting-approval gate (no contexts) is a follow-up commit; for
+  // now this branch shows a placeholder so accounts in that state
+  // don't crash the app.
+  if (contexts.contexts.length === 0 || !active) {
+    return (
+      <div className="h-full flex items-center justify-center text-neutral-500">
+        No workspaces yet.
+      </div>
+    );
   }
 
   return (
@@ -171,12 +226,9 @@ function MainApp() {
       <header className="border-b border-neutral-200 bg-white px-4 h-12 flex items-center gap-3">
         <span className="font-semibold">Orchext</span>
         <span className="text-neutral-400">·</span>
-        <button
-          onClick={switchTenant}
-          className="text-sm text-neutral-700 hover:text-neutral-900"
-        >
-          {tenant.name}
-        </button>
+        <span className="text-sm text-neutral-700">
+          {active.kind === "personal" ? "Personal" : active.name}
+        </span>
         <div className="ml-auto flex items-center gap-3 text-sm text-neutral-600">
           <span>{auth.profile.displayName}</span>
           <button
@@ -188,6 +240,11 @@ function MainApp() {
         </div>
       </header>
       <div className="flex flex-1 min-h-0">
+        <OrgRail
+          contexts={contexts.contexts}
+          activeTenantId={active.tenantId}
+          onSelect={selectContext}
+        />
         {workspace.kind === "ready" && (
           <nav className="w-44 border-r border-neutral-200 bg-white p-2 flex flex-col gap-1">
             <NavBtn
@@ -220,28 +277,42 @@ function MainApp() {
           )}
           {workspace.kind === "locked" && (
             <UnlockView
-              tenant={tenant}
+              tenant={contextToMembership(active)}
               onUnlocked={(contentKey) =>
                 setWorkspace({ kind: "ready", contentKey })
               }
             />
           )}
           {workspace.kind === "ready" && view === "documents" && (
-            <DocumentsView tenant={tenant} />
+            <DocumentsView tenant={contextToMembership(active)} />
           )}
           {workspace.kind === "ready" && view === "proposals" && (
-            <ProposalsView tenant={tenant} />
+            <ProposalsView tenant={contextToMembership(active)} />
           )}
           {workspace.kind === "ready" && view === "tokens" && (
-            <TokensView tenant={tenant} />
+            <TokensView tenant={contextToMembership(active)} />
           )}
           {workspace.kind === "ready" && view === "audit" && (
-            <AuditView tenant={tenant} />
+            <AuditView tenant={contextToMembership(active)} />
           )}
         </main>
       </div>
     </div>
   );
+}
+
+/// Existing views (DocumentsView, TokensView, etc.) accept a
+/// `Membership`. The rail-based shell keeps a richer `Context`, so
+/// adapt back at the boundary. Once the views move to `Context`
+/// natively this can go.
+function contextToMembership(ctx: Context): Membership {
+  return {
+    tenant_id: ctx.tenantId,
+    name: ctx.kind === "personal" ? ctx.name : ctx.name,
+    kind: ctx.kind === "personal" ? "personal" : "org",
+    role: ctx.kind === "personal" ? "owner" : ctx.role,
+    created_at: "",
+  };
 }
 
 function NavBtn({
