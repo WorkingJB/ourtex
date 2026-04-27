@@ -156,6 +156,17 @@ export type UpdateOrgInput = {
   settings?: Record<string, unknown>;
 };
 
+export type Invitation = {
+  id: string;
+  org_id: string;
+  email: string;
+  role: "owner" | "admin" | "org_editor" | "member";
+  invited_by: string;
+  invited_at: string;
+  redeemed_at: string | null;
+  redeemed_by: string | null;
+};
+
 // ---------- Documents ----------
 
 export type ListEntry = {
@@ -386,6 +397,25 @@ export const api = {
       "POST",
       `/v1/orgs/${encodeURIComponent(orgId)}/pending/${encodeURIComponent(accountId)}/reject`,
       {}
+    ),
+  orgInvitations: (
+    orgId: string,
+    status: "open" | "redeemed" | "all" = "open"
+  ) =>
+    request<{ invitations: Invitation[] }>(
+      "GET",
+      `/v1/orgs/${encodeURIComponent(orgId)}/invitations?status=${status}`
+    ),
+  orgInvite: (orgId: string, email: string, role?: string) =>
+    request<Invitation>(
+      "POST",
+      `/v1/orgs/${encodeURIComponent(orgId)}/invitations`,
+      role ? { email, role } : { email }
+    ),
+  orgInvitationDelete: (orgId: string, invitationId: string) =>
+    request<void>(
+      "DELETE",
+      `/v1/orgs/${encodeURIComponent(orgId)}/invitations/${encodeURIComponent(invitationId)}`
     ),
 
   docList: (tenantId: string) =>
