@@ -68,6 +68,11 @@ function MainApp() {
   });
   const [heartbeat, setHeartbeatHandle] = useState<Heartbeat | null>(null);
   const [view, setView] = useState<View>("documents");
+  /// Optional doc-id filter for the Proposals view. Set when the
+  /// user clicks "Review" on the inline banner in the Documents view
+  /// so they land on that doc's pending proposals; cleared when the
+  /// active context changes or they navigate elsewhere.
+  const [proposalsFocus, setProposalsFocus] = useState<string | null>(null);
 
   // Probe the cookie-backed session on mount. 200 ⇒ authenticated;
   // anything else ⇒ no session, fall through to login.
@@ -126,9 +131,18 @@ function MainApp() {
 
   // Hop back to documents when the active context changes so a
   // "tokens" or "audit" selection from a previous one doesn't stick.
+  // Also drop any proposals-focus from the previous context.
   useEffect(() => {
     setView("documents");
+    setProposalsFocus(null);
   }, [active?.tenantId]);
+
+  // Clear the proposals doc-focus whenever the user manually
+  // navigates away from Proposals — keeps it from hanging around
+  // for the next deep-link.
+  useEffect(() => {
+    if (view !== "proposals") setProposalsFocus(null);
+  }, [view]);
 
   // Classify the tenant whenever the caller flips to a new one. Seeded
   // tenants without a local content key land in UnlockView; plaintext
@@ -373,10 +387,19 @@ function MainApp() {
             />
           )}
           {workspace.kind === "ready" && view === "documents" && (
-            <DocumentsView tenant={contextToMembership(active)} />
+            <DocumentsView
+              tenant={contextToMembership(active)}
+              onSwitchToProposals={(docId) => {
+                setProposalsFocus(docId);
+                setView("proposals");
+              }}
+            />
           )}
           {workspace.kind === "ready" && view === "proposals" && (
-            <ProposalsView tenant={contextToMembership(active)} />
+            <ProposalsView
+              tenant={contextToMembership(active)}
+              focusDocId={proposalsFocus}
+            />
           )}
           {workspace.kind === "ready" && view === "tokens" && (
             <TokensView tenant={contextToMembership(active)} />

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { api, ApiFailure, Membership, Proposal } from "./api";
 
 function errMessage(e: unknown): string {
@@ -7,11 +7,28 @@ function errMessage(e: unknown): string {
 
 type FilterStatus = "pending" | "approved" | "rejected" | "all";
 
-export function ProposalsView({ tenant }: { tenant: Membership }) {
+export function ProposalsView({
+  tenant,
+  focusDocId,
+}: {
+  tenant: Membership;
+  /// Optional initial doc-id filter — set when the user clicked
+  /// "Review" on the inline proposal banner in the Documents view.
+  /// The view shows a clear-filter chip so they can broaden back out.
+  focusDocId?: string | null;
+}) {
   const [filter, setFilter] = useState<FilterStatus>("pending");
+  const [docFocus, setDocFocus] = useState<string | null>(focusDocId ?? null);
   const [proposals, setProposals] = useState<Proposal[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+
+  // Adopt a new prop value when the parent updates focusDocId (e.g.
+  // user clicked Review on a different doc). Treat null/undefined as
+  // "no parent focus", clearing any local override.
+  useEffect(() => {
+    setDocFocus(focusDocId ?? null);
+  }, [focusDocId]);
 
   async function refresh() {
     try {
@@ -28,6 +45,12 @@ export function ProposalsView({ tenant }: { tenant: Membership }) {
     void refresh();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tenant.tenant_id, filter]);
+
+  const visibleProposals = useMemo(() => {
+    if (!proposals) return null;
+    if (!docFocus) return proposals;
+    return proposals.filter((p) => p.doc_id === docFocus);
+  }, [proposals, docFocus]);
 
   async function approve(p: Proposal) {
     setBusy(p.id);
@@ -68,22 +91,39 @@ export function ProposalsView({ tenant }: { tenant: Membership }) {
         </div>
       </div>
 
+      {docFocus && (
+        <div className="mb-4 px-3 py-2 bg-amber-50 border border-amber-200 rounded-md flex items-center justify-between gap-3">
+          <div className="text-sm text-amber-900">
+            Showing proposals for{" "}
+            <span className="font-mono">{docFocus}</span>.
+          </div>
+          <button
+            onClick={() => setDocFocus(null)}
+            className="text-xs text-amber-700 hover:text-amber-900 underline"
+          >
+            Clear filter
+          </button>
+        </div>
+      )}
+
       {error && (
         <div className="mb-4 p-3 bg-red-50 text-red-700 text-sm rounded-lg border border-red-200">
           {error}
         </div>
       )}
 
-      {proposals && proposals.length === 0 && (
+      {visibleProposals && visibleProposals.length === 0 && (
         <div className="bg-white border border-neutral-200 rounded-lg p-8 text-center text-neutral-500 text-sm">
-          {filter === "pending"
-            ? "No proposals waiting for review. Agents holding a `read+propose` token can submit changes here."
-            : `No ${filter} proposals.`}
+          {docFocus
+            ? `No ${filter === "all" ? "" : `${filter} `}proposals against ${docFocus}.`
+            : filter === "pending"
+              ? "No proposals waiting for review. Agents holding a `read+propose` token can submit changes here."
+              : `No ${filter} proposals.`}
         </div>
       )}
 
       <div className="space-y-3">
-        {proposals?.map((p) => (
+        {visibleProposals?.map((p) => (
           <ProposalCard
             key={p.id}
             proposal={p}

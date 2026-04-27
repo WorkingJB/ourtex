@@ -25,7 +25,16 @@ function errMessage(e: unknown): string {
   return e instanceof ApiFailure ? e.message : String(e);
 }
 
-export function DocumentsView({ tenant }: { tenant: Membership }) {
+export function DocumentsView({
+  tenant,
+  onSwitchToProposals,
+}: {
+  tenant: Membership;
+  /// Hook for the inline "N pending proposals → Review" banner. App
+  /// uses this to flip the view to Proposals and pre-focus the
+  /// filter on the doc the user came from.
+  onSwitchToProposals?: (docId: string) => void;
+}) {
   const isOrg = tenant.kind === "org";
   const [entries, setEntries] = useState<Load<ListEntry[]>>({ state: "loading" });
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -33,6 +42,23 @@ export function DocumentsView({ tenant }: { tenant: Membership }) {
   const [section, setSection] = useState<Section>("all");
   const [detail, setDetail] = useState<Load<DocDetail> | null>(null);
   const [creating, setCreating] = useState(false);
+  /// Pending-proposal count keyed by doc_id, for the inline banner.
+  /// Refreshed alongside the doc list so approvals from a Proposals
+  /// session reflect immediately on return.
+  const [pendingByDoc, setPendingByDoc] = useState<Record<string, number>>({});
+
+  async function refreshProposalCounts() {
+    try {
+      const resp = await api.proposalsList(tenant.tenant_id, "pending");
+      const counts: Record<string, number> = {};
+      for (const p of resp.proposals) {
+        counts[p.doc_id] = (counts[p.doc_id] ?? 0) + 1;
+      }
+      setPendingByDoc(counts);
+    } catch {
+      // Best-effort. Don't fail the docs view on a proposals fetch error.
+    }
+  }
 
   async function refreshList() {
     try {
@@ -41,6 +67,7 @@ export function DocumentsView({ tenant }: { tenant: Membership }) {
     } catch (e) {
       setEntries({ state: "error", message: errMessage(e) });
     }
+    void refreshProposalCounts();
   }
 
   useEffect(() => {
@@ -244,22 +271,30 @@ export function DocumentsView({ tenant }: { tenant: Membership }) {
           </div>
         )}
         {!creating && detail?.state === "ready" && (
-          <DocEditor
-            key={`${detail.data.id}@${detail.data.version}`}
-            tenantId={tenant.tenant_id}
-            tenantName={tenant.name}
-            tenantKind={tenant.kind}
-            initial={detail.data}
-            onSaved={async (d) => {
-              await refreshList();
-              setDetail({ state: "ready", data: d });
-            }}
-            onDeleted={async () => {
-              await refreshList();
-              setSelectedId(null);
-              setDetail(null);
-            }}
-          />
+          <>
+            {pendingByDoc[detail.data.id] > 0 && onSwitchToProposals && (
+              <ProposalBanner
+                count={pendingByDoc[detail.data.id]}
+                onReview={() => onSwitchToProposals(detail.data.id)}
+              />
+            )}
+            <DocEditor
+              key={`${detail.data.id}@${detail.data.version}`}
+              tenantId={tenant.tenant_id}
+              tenantName={tenant.name}
+              tenantKind={tenant.kind}
+              initial={detail.data}
+              onSaved={async (d) => {
+                await refreshList();
+                setDetail({ state: "ready", data: d });
+              }}
+              onDeleted={async () => {
+                await refreshList();
+                setSelectedId(null);
+                setDetail(null);
+              }}
+            />
+          </>
         )}
         {!creating && !detail && (
           <div className="h-full flex items-center justify-center text-neutral-400 text-sm">
@@ -267,6 +302,31 @@ export function DocumentsView({ tenant }: { tenant: Membership }) {
           </div>
         )}
       </section>
+    </div>
+  );
+}
+
+function ProposalBanner({
+  count,
+  onReview,
+}: {
+  count: number;
+  onReview: () => void;
+}) {
+  return (
+    <div className="mx-6 mt-6 mb-0 px-4 py-3 bg-amber-50 border border-amber-200 rounded-md flex items-center justify-between gap-3">
+      <div className="text-sm text-amber-900">
+        <strong>
+          {count} pending proposal{count === 1 ? "" : "s"}
+        </strong>{" "}
+        against this document.
+      </div>
+      <button
+        onClick={onReview}
+        className="text-xs px-3 py-1.5 rounded bg-amber-600 text-white hover:bg-amber-700"
+      >
+        Review →
+      </button>
     </div>
   );
 }
