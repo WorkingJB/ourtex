@@ -333,6 +333,42 @@ async fn readyz_ok_when_db_reachable(db: PgPool) {
     assert_eq!(resp.status(), StatusCode::OK);
 }
 
+#[sqlx::test(migrations = "./migrations")]
+async fn signup_succeeds_with_rate_limiter_enabled_and_xff(db: PgPool) {
+    // Regression: production shipped with `rate_limit_auth: true` (the
+    // default) but `tower_governor`'s key extractor couldn't find a
+    // client IP — both signup and login 500'd with "Unable To Extract
+    // Key" on every request. The fix wires `SmartIpKeyExtractor` (which
+    // reads X-Forwarded-For) and `into_make_service_with_connect_info`
+    // in the binary. This test pins the XFF path: rate_limit ON, peer
+    // IP unavailable (oneshot), but XFF set — must succeed.
+    let app = router(AppState::new(db));
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/auth/native/signup")
+                .header("content-type", "application/json")
+                .header("x-forwarded-for", "203.0.113.7")
+                .body(Body::from(
+                    json!({
+                        "email": "ratelimit@example.com",
+                        "password": "correct horse battery staple",
+                        "display_name": "RL"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::CREATED,
+        "signup must succeed when XFF is present and rate-limit is enabled"
+    );
+}
+
 #[test]
 fn cors_layer_returns_none_for_empty_origin_list() {
     assert!(orchext_server::cors_layer(&[]).is_none());

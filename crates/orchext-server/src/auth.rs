@@ -41,7 +41,9 @@ use chrono::{DateTime, Utc};
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use tower_governor::{governor::GovernorConfigBuilder, GovernorLayer};
+use tower_governor::{
+    governor::GovernorConfigBuilder, key_extractor::SmartIpKeyExtractor, GovernorLayer,
+};
 use uuid::Uuid;
 
 /// Build the `/v1/auth/*` router. Takes an `AppState` by value so the
@@ -64,10 +66,20 @@ pub fn router(state: AppState) -> Router<AppState> {
         // credential stuffing or signup-flood campaigns become
         // unattractive. This is in-process; multi-instance deployments
         // need a Redis-backed limiter or an upstream proxy rule.
+        //
+        // Key extractor: `SmartIpKeyExtractor` reads `X-Forwarded-For`
+        // / `X-Real-IP` / `Forwarded` first, then falls back to the
+        // axum `ConnectInfo<SocketAddr>` extension. Behind Fly the XFF
+        // header is always set; without this the default
+        // `PeerIpKeyExtractor` 500s with "Unable To Extract Key" since
+        // every request would otherwise share the Fly proxy's peer IP
+        // (or have no peer at all). `main.rs` wires `ConnectInfo` so
+        // the fallback works for direct/self-host deploys too.
+        let mut builder = GovernorConfigBuilder::default();
+        builder.per_second(6).burst_size(5);
         let governor_conf = Arc::new(
-            GovernorConfigBuilder::default()
-                .per_second(6)
-                .burst_size(5)
+            builder
+                .key_extractor(SmartIpKeyExtractor)
                 .finish()
                 .expect("governor config should be valid"),
         );
