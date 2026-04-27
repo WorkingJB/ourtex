@@ -121,12 +121,22 @@ pub async fn signup(
     .execute(&mut *tx)
     .await?;
 
-    // Org assignment per D17d. Self-hosted: first user → owner of
-    // singleton; subsequent → pending. SaaS: domain-match → pending,
-    // new domain → owner of new org claiming that domain.
-    let outcome = match deployment_mode {
-        DeploymentMode::SelfHosted => orgs::bootstrap_self_hosted(&mut tx, &account).await?,
-        DeploymentMode::Saas => orgs::bootstrap_saas(&mut tx, &account, &email).await?,
+    // Pre-approved invitations bypass both the bootstrap rules and
+    // the awaiting-approval gate. The admin already said "this email
+    // is welcome" — the signup just realizes that.
+    let invited_org_ids = orgs::redeem_invitations(&mut tx, &account, &email).await?;
+    let outcome = if !invited_org_ids.is_empty() {
+        SignupOutcome::InvitedToOrgs {
+            org_ids: invited_org_ids,
+        }
+    } else {
+        // Org assignment per D17d. Self-hosted: first user → owner of
+        // singleton; subsequent → pending. SaaS: domain-match → pending,
+        // new domain → owner of new org claiming that domain.
+        match deployment_mode {
+            DeploymentMode::SelfHosted => orgs::bootstrap_self_hosted(&mut tx, &account).await?,
+            DeploymentMode::Saas => orgs::bootstrap_saas(&mut tx, &account, &email).await?,
+        }
     };
 
     tx.commit().await?;

@@ -68,9 +68,71 @@ pub enum SignupOutcome {
     /// Account exists but has no org membership yet — pending row
     /// landed for an admin to approve.
     AwaitingApproval { org_id: Uuid, pending_id: Uuid },
+    /// Account was pre-approved via one or more `org_invitations`;
+    /// memberships materialized directly without going through
+    /// pending_signups. No bootstrap path runs in this case.
+    InvitedToOrgs { org_ids: Vec<Uuid> },
 }
 
 // ---------- signup helpers (called from accounts::signup) ----------
+
+/// Redeem any open `org_invitations` for `email`. Materializes a
+/// membership for each one and marks the invitation redeemed.
+///
+/// Returns the org_ids the account was joined into. If non-empty, the
+/// caller should SKIP the bootstrap_self_hosted/bootstrap_saas path
+/// — invitations are the explicit-approval signal that supersedes the
+/// implicit bootstrap rules.
+///
+/// Email matching is case-insensitive (mirrors how `accounts.email`
+/// is normalized at signup).
+pub async fn redeem_invitations(
+    tx: &mut Transaction<'_, Postgres>,
+    account: &Account,
+    email: &str,
+) -> Result<Vec<Uuid>, ApiError> {
+    let invites: Vec<(Uuid, Uuid, String, Uuid)> = sqlx::query_as(
+        r#"
+        SELECT i.id, i.org_id, i.role, o.tenant_id
+        FROM org_invitations i
+        JOIN organizations o ON o.id = i.org_id
+        WHERE LOWER(i.email) = LOWER($1) AND i.redeemed_at IS NULL
+        FOR UPDATE OF i
+        "#,
+    )
+    .bind(email)
+    .fetch_all(&mut **tx)
+    .await?;
+
+    let mut org_ids = Vec::with_capacity(invites.len());
+    for (invite_id, org_id, role, tenant_id) in invites {
+        sqlx::query(
+            r#"
+            INSERT INTO memberships (tenant_id, account_id, role)
+            VALUES ($1, $2, $3)
+            ON CONFLICT (tenant_id, account_id) DO NOTHING
+            "#,
+        )
+        .bind(tenant_id)
+        .bind(account.id)
+        .bind(&role)
+        .execute(&mut **tx)
+        .await?;
+        sqlx::query(
+            r#"
+            UPDATE org_invitations
+            SET redeemed_at = now(), redeemed_by = $1
+            WHERE id = $2
+            "#,
+        )
+        .bind(account.id)
+        .bind(invite_id)
+        .execute(&mut **tx)
+        .await?;
+        org_ids.push(org_id);
+    }
+    Ok(org_ids)
+}
 
 /// Self-hosted: first signup → owner of new singleton org.
 /// Subsequent signups → pending for the existing singleton.
@@ -248,6 +310,14 @@ pub fn router() -> Router<AppState> {
         .route(
             "/orgs/:org_id/pending/:account_id/reject",
             axum::routing::post(reject_pending),
+        )
+        .route(
+            "/orgs/:org_id/invitations",
+            get(list_invitations).post(create_invitation),
+        )
+        .route(
+            "/orgs/:org_id/invitations/:invitation_id",
+            axum::routing::delete(delete_invitation),
         )
 }
 
@@ -764,6 +834,164 @@ async fn reject_pending(
     .await?;
 
     tx.commit().await?;
+    Ok(axum::http::StatusCode::NO_CONTENT)
+}
+
+// ---------- admin: invitations ----------
+
+#[derive(Debug, Clone, Serialize, FromRow)]
+pub struct Invitation {
+    pub id: Uuid,
+    pub org_id: Uuid,
+    pub email: String,
+    pub role: String,
+    pub invited_by: Uuid,
+    pub invited_at: DateTime<Utc>,
+    pub redeemed_at: Option<DateTime<Utc>>,
+    pub redeemed_by: Option<Uuid>,
+}
+
+#[derive(Debug, Serialize)]
+struct InvitationsResponse {
+    invitations: Vec<Invitation>,
+}
+
+#[derive(Debug, Deserialize)]
+struct InvitationsQuery {
+    /// `open` (default), `redeemed`, or `all`.
+    #[serde(default)]
+    status: Option<String>,
+}
+
+async fn list_invitations(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<SessionContext>,
+    Path(org_id): Path<Uuid>,
+    axum::extract::Query(q): axum::extract::Query<InvitationsQuery>,
+) -> Result<Json<InvitationsResponse>, ApiError> {
+    require_admin(&state.db, ctx.account_id, org_id).await?;
+    let status = q.status.as_deref().unwrap_or("open");
+    let invitations: Vec<Invitation> = match status {
+        "open" => sqlx::query_as(
+            r#"
+            SELECT id, org_id, email, role, invited_by, invited_at,
+                   redeemed_at, redeemed_by
+            FROM org_invitations
+            WHERE org_id = $1 AND redeemed_at IS NULL
+            ORDER BY invited_at ASC
+            "#,
+        )
+        .bind(org_id)
+        .fetch_all(&state.db)
+        .await?,
+        "redeemed" => sqlx::query_as(
+            r#"
+            SELECT id, org_id, email, role, invited_by, invited_at,
+                   redeemed_at, redeemed_by
+            FROM org_invitations
+            WHERE org_id = $1 AND redeemed_at IS NOT NULL
+            ORDER BY invited_at ASC
+            "#,
+        )
+        .bind(org_id)
+        .fetch_all(&state.db)
+        .await?,
+        "all" => sqlx::query_as(
+            r#"
+            SELECT id, org_id, email, role, invited_by, invited_at,
+                   redeemed_at, redeemed_by
+            FROM org_invitations
+            WHERE org_id = $1
+            ORDER BY invited_at ASC
+            "#,
+        )
+        .bind(org_id)
+        .fetch_all(&state.db)
+        .await?,
+        _ => {
+            return Err(ApiError::InvalidArgument(
+                "status must be open|redeemed|all".into(),
+            ))
+        }
+    };
+    Ok(Json(InvitationsResponse { invitations }))
+}
+
+#[derive(Debug, Deserialize)]
+struct CreateInvitationInput {
+    email: String,
+    #[serde(default)]
+    role: Option<String>,
+}
+
+async fn create_invitation(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<SessionContext>,
+    Path(org_id): Path<Uuid>,
+    Json(input): Json<CreateInvitationInput>,
+) -> Result<Json<Invitation>, ApiError> {
+    let caller_role = require_admin(&state.db, ctx.account_id, org_id).await?;
+
+    let email = input.email.trim().to_lowercase();
+    if email.is_empty() || !email.contains('@') {
+        return Err(ApiError::InvalidArgument(
+            "email must be a non-empty address with '@'".into(),
+        ));
+    }
+    let role = input.role.unwrap_or_else(|| "member".into()).to_lowercase();
+    if !matches!(role.as_str(), "owner" | "admin" | "org_editor" | "member") {
+        return Err(ApiError::InvalidArgument(
+            "role must be one of owner, admin, org_editor, member".into(),
+        ));
+    }
+    if role == "owner" && caller_role != "owner" {
+        return Err(ApiError::Forbidden);
+    }
+
+    // The partial UNIQUE on (org_id, lower(email)) WHERE redeemed_at
+    // IS NULL handles the duplicate-open case: the INSERT raises
+    // 23505, which we surface as a 409 so the UI can display a
+    // useful message.
+    let row: Result<Invitation, sqlx::Error> = sqlx::query_as(
+        r#"
+        INSERT INTO org_invitations (org_id, email, role, invited_by)
+        VALUES ($1, $2, $3, $4)
+        RETURNING id, org_id, email, role, invited_by, invited_at,
+                  redeemed_at, redeemed_by
+        "#,
+    )
+    .bind(org_id)
+    .bind(&email)
+    .bind(&role)
+    .bind(ctx.account_id)
+    .fetch_one(&state.db)
+    .await;
+
+    match row {
+        Ok(inv) => Ok(Json(inv)),
+        Err(sqlx::Error::Database(db)) if db.code().as_deref() == Some("23505") => {
+            Err(ApiError::Conflict("email already invited"))
+        }
+        Err(e) => Err(ApiError::Internal(Box::new(e))),
+    }
+}
+
+async fn delete_invitation(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<SessionContext>,
+    Path((org_id, invitation_id)): Path<(Uuid, Uuid)>,
+) -> Result<axum::http::StatusCode, ApiError> {
+    require_admin(&state.db, ctx.account_id, org_id).await?;
+    let result = sqlx::query(
+        "DELETE FROM org_invitations WHERE id = $1 AND org_id = $2",
+    )
+    .bind(invitation_id)
+    .bind(org_id)
+    .execute(&state.db)
+    .await?;
+    if result.rows_affected() == 0 {
+        return Err(ApiError::NotFound);
+    }
     Ok(axum::http::StatusCode::NO_CONTENT)
 }
 
