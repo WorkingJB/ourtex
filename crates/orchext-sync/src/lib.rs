@@ -23,6 +23,7 @@ pub mod client;
 pub mod crypto;
 pub mod driver;
 pub mod error;
+pub mod orgs;
 pub mod proposals;
 pub mod session;
 
@@ -30,5 +31,10 @@ pub use client::{RemoteClient, RemoteConfig};
 pub use crypto::{CryptoState, InitCryptoResponse, PublishResponse};
 pub use driver::{RemoteVaultDriver, WriteResponse};
 pub use error::{Result, SyncError};
+pub use orgs::{
+    AccountInfo, Invitation, InvitationsResponse, MeResponse, MemberDetail,
+    MembersResponse, OrgMembership, Organization, OrgsListResponse, PendingDetail,
+    PendingResponse, PendingSignup, UpdateOrgInput,
+};
 pub use proposals::{ApproveResponse as ProposalApproveResponse, ListResponse as ProposalListResponse, Proposal};
 pub use session::{list_tenants, login, Account, LoginInput, LoginOutcome, SessionIssued, Tenant};
