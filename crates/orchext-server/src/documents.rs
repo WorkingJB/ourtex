@@ -248,6 +248,13 @@ async fn write_doc(
             doc_id
         )));
     }
+    // Org-context write gate (D17g). If either the new doc or any
+    // existing doc at this id is type=org, owner/admin/org_editor is
+    // required. Members can `context.propose` against org docs but
+    // not write them directly.
+    if doc.frontmatter.type_ == "org" && !tc.can_write_org() {
+        return Err(ApiError::Forbidden);
+    }
     let canonical = doc
         .serialize()
         .map_err(|e| ApiError::Internal(Box::new(e)))?;
@@ -270,17 +277,26 @@ async fn write_doc(
     // audit append.
     let mut tx = state.db.begin().await?;
 
-    let existing: Option<(String,)> = sqlx::query_as(
-        "SELECT version FROM documents WHERE tenant_id = $1 AND doc_id = $2 FOR UPDATE",
+    let existing: Option<(String, String)> = sqlx::query_as(
+        "SELECT version, type_ FROM documents WHERE tenant_id = $1 AND doc_id = $2 FOR UPDATE",
     )
     .bind(tc.tenant_id)
     .bind(&doc_id)
     .fetch_optional(&mut *tx)
     .await?;
 
+    // Catch the downgrade case: existing doc at this id is type=org,
+    // and the writer doesn't have can_write_org. Even if the new doc
+    // is type=task, this is overwriting an org doc.
+    if let Some((_, existing_type)) = existing.as_ref() {
+        if existing_type == "org" && !tc.can_write_org() {
+            return Err(ApiError::Forbidden);
+        }
+    }
+
     if let Some(expected) = req.base_version.as_ref() {
         match &existing {
-            Some((stored,)) if stored != expected => {
+            Some((stored, _)) if stored != expected => {
                 return Err(ApiError::Conflict("version_conflict"));
             }
             None => {
@@ -389,17 +405,21 @@ async fn delete_doc(
 
     let mut tx = state.db.begin().await?;
 
-    let existing: Option<(String,)> = sqlx::query_as(
-        "SELECT version FROM documents WHERE tenant_id = $1 AND doc_id = $2 FOR UPDATE",
+    let existing: Option<(String, String)> = sqlx::query_as(
+        "SELECT version, type_ FROM documents WHERE tenant_id = $1 AND doc_id = $2 FOR UPDATE",
     )
     .bind(tc.tenant_id)
     .bind(&doc_id)
     .fetch_optional(&mut *tx)
     .await?;
 
-    let Some((version,)) = existing else {
+    let Some((version, existing_type)) = existing else {
         return Err(ApiError::NotFound);
     };
+    // Org-context delete gate (D17g). Members can't delete an org doc.
+    if existing_type == "org" && !tc.can_write_org() {
+        return Err(ApiError::Forbidden);
+    }
     if let Some(expected) = q.base_version.as_ref() {
         if *expected != version {
             return Err(ApiError::Conflict("version_conflict"));

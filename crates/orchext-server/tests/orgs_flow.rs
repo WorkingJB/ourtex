@@ -289,6 +289,394 @@ async fn post_org_creates_out_of_band(db: PgPool) {
     assert_eq!(orgs["memberships"].as_array().unwrap().len(), 2);
 }
 
+// ---------- approval queue ----------
+
+#[sqlx::test(migrations = "./migrations")]
+async fn approve_pending_creates_membership(db: PgPool) {
+    let app = router(
+        AppState::new(db)
+            .with_rate_limit_auth(false)
+            .with_deployment_mode(DeploymentMode::SelfHosted),
+    );
+
+    let owner = signup_and_get_bearer(&app, "owner@example.com").await;
+    let owner_orgs = get_orgs(&app, &owner).await;
+    let org_id = owner_orgs["memberships"][0]["org_id"].as_str().unwrap().to_string();
+
+    // Second account → pending.
+    let pending_user = signup_and_get_bearer(&app, "pending@example.com").await;
+    let pending_orgs = get_orgs(&app, &pending_user).await;
+    let pending_account_id = me_account_id(&app, &pending_user).await;
+    assert!(pending_orgs["memberships"].as_array().unwrap().is_empty());
+    assert_eq!(pending_orgs["pending"].as_array().unwrap().len(), 1);
+
+    // List pending as owner.
+    let pending_list = json_get(
+        &app,
+        &owner,
+        &format!("/v1/orgs/{org_id}/pending"),
+    )
+    .await;
+    let pending_arr = pending_list["pending"].as_array().unwrap();
+    assert_eq!(pending_arr.len(), 1);
+    assert_eq!(pending_arr[0]["email"], "pending@example.com");
+
+    // Approve at default `member` role.
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!(
+                    "/v1/orgs/{org_id}/pending/{pending_account_id}/approve"
+                ))
+                .header("authorization", format!("Bearer {owner}"))
+                .header("content-type", "application/json")
+                .body(Body::from("{}"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body: Value = read_json(resp.into_body()).await;
+    assert_eq!(body["role"], "member");
+
+    // Pending user now sees a membership instead of a pending row.
+    let post_orgs = get_orgs(&app, &pending_user).await;
+    assert_eq!(post_orgs["memberships"].as_array().unwrap().len(), 1);
+    assert_eq!(post_orgs["memberships"][0]["role"], "member");
+    assert!(post_orgs["pending"].as_array().unwrap().is_empty());
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn approve_already_decided_conflicts(db: PgPool) {
+    let app = router(
+        AppState::new(db)
+            .with_rate_limit_auth(false)
+            .with_deployment_mode(DeploymentMode::SelfHosted),
+    );
+
+    let owner = signup_and_get_bearer(&app, "owner@example.com").await;
+    let owner_orgs = get_orgs(&app, &owner).await;
+    let org_id = owner_orgs["memberships"][0]["org_id"].as_str().unwrap().to_string();
+
+    let pending_user = signup_and_get_bearer(&app, "pending@example.com").await;
+    let pending_account_id = me_account_id(&app, &pending_user).await;
+
+    // First approve → ok.
+    let _ = post_json(
+        &app,
+        &owner,
+        &format!("/v1/orgs/{org_id}/pending/{pending_account_id}/approve"),
+        json!({}),
+    )
+    .await;
+
+    // Second approve → conflict.
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!(
+                    "/v1/orgs/{org_id}/pending/{pending_account_id}/approve"
+                ))
+                .header("authorization", format!("Bearer {owner}"))
+                .header("content-type", "application/json")
+                .body(Body::from("{}"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CONFLICT);
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn reject_pending_marks_rejected(db: PgPool) {
+    let app = router(
+        AppState::new(db)
+            .with_rate_limit_auth(false)
+            .with_deployment_mode(DeploymentMode::SelfHosted),
+    );
+
+    let owner = signup_and_get_bearer(&app, "owner@example.com").await;
+    let owner_orgs = get_orgs(&app, &owner).await;
+    let org_id = owner_orgs["memberships"][0]["org_id"].as_str().unwrap().to_string();
+
+    let pending_user = signup_and_get_bearer(&app, "pending@example.com").await;
+    let pending_account_id = me_account_id(&app, &pending_user).await;
+
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!(
+                    "/v1/orgs/{org_id}/pending/{pending_account_id}/reject"
+                ))
+                .header("authorization", format!("Bearer {owner}"))
+                .header("content-type", "application/json")
+                .body(Body::from("{}"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+
+    let pending_list = json_get(
+        &app,
+        &owner,
+        &format!("/v1/orgs/{org_id}/pending?status=rejected"),
+    )
+    .await;
+    assert_eq!(pending_list["pending"].as_array().unwrap().len(), 1);
+    assert_eq!(pending_list["pending"][0]["status"], "rejected");
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn list_pending_admin_only(db: PgPool) {
+    let app = router(
+        AppState::new(db)
+            .with_rate_limit_auth(false)
+            .with_deployment_mode(DeploymentMode::SelfHosted),
+    );
+
+    let owner = signup_and_get_bearer(&app, "owner@example.com").await;
+    let owner_orgs = get_orgs(&app, &owner).await;
+    let org_id = owner_orgs["memberships"][0]["org_id"].as_str().unwrap().to_string();
+    let member_secret = approve_member(&app, &owner, &org_id, "member@example.com").await;
+
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/v1/orgs/{org_id}/pending"))
+                .header("authorization", format!("Bearer {member_secret}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+}
+
+// ---------- members CRUD ----------
+
+#[sqlx::test(migrations = "./migrations")]
+async fn list_members_includes_owner_and_approved(db: PgPool) {
+    let app = router(
+        AppState::new(db)
+            .with_rate_limit_auth(false)
+            .with_deployment_mode(DeploymentMode::SelfHosted),
+    );
+
+    let owner = signup_and_get_bearer(&app, "owner@example.com").await;
+    let owner_orgs = get_orgs(&app, &owner).await;
+    let org_id = owner_orgs["memberships"][0]["org_id"].as_str().unwrap().to_string();
+    let _ = approve_member(&app, &owner, &org_id, "member@example.com").await;
+
+    let body = json_get(&app, &owner, &format!("/v1/orgs/{org_id}/members")).await;
+    let members = body["members"].as_array().unwrap();
+    assert_eq!(members.len(), 2);
+    let roles: Vec<&str> = members.iter().map(|m| m["role"].as_str().unwrap()).collect();
+    assert!(roles.contains(&"owner"));
+    assert!(roles.contains(&"member"));
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn patch_member_promotes_role(db: PgPool) {
+    let app = router(
+        AppState::new(db)
+            .with_rate_limit_auth(false)
+            .with_deployment_mode(DeploymentMode::SelfHosted),
+    );
+
+    let owner = signup_and_get_bearer(&app, "owner@example.com").await;
+    let owner_orgs = get_orgs(&app, &owner).await;
+    let org_id = owner_orgs["memberships"][0]["org_id"].as_str().unwrap().to_string();
+    let member_secret = approve_member(&app, &owner, &org_id, "member@example.com").await;
+    let member_account_id = me_account_id(&app, &member_secret).await;
+
+    let body = patch_json(
+        &app,
+        &owner,
+        &format!("/v1/orgs/{org_id}/members/{member_account_id}"),
+        json!({"role": "org_editor"}),
+    )
+    .await;
+    assert_eq!(body["role"], "org_editor");
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn patch_member_blocks_only_owner_demotion(db: PgPool) {
+    let app = router(
+        AppState::new(db)
+            .with_rate_limit_auth(false)
+            .with_deployment_mode(DeploymentMode::SelfHosted),
+    );
+
+    let owner = signup_and_get_bearer(&app, "owner@example.com").await;
+    let owner_orgs = get_orgs(&app, &owner).await;
+    let org_id = owner_orgs["memberships"][0]["org_id"].as_str().unwrap().to_string();
+    let owner_account_id = me_account_id(&app, &owner).await;
+
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri(format!("/v1/orgs/{org_id}/members/{owner_account_id}"))
+                .header("authorization", format!("Bearer {owner}"))
+                .header("content-type", "application/json")
+                .body(Body::from(json!({"role": "admin"}).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CONFLICT);
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn admin_cannot_promote_to_owner(db: PgPool) {
+    let app = router(
+        AppState::new(db)
+            .with_rate_limit_auth(false)
+            .with_deployment_mode(DeploymentMode::SelfHosted),
+    );
+
+    let owner = signup_and_get_bearer(&app, "owner@example.com").await;
+    let owner_orgs = get_orgs(&app, &owner).await;
+    let org_id = owner_orgs["memberships"][0]["org_id"].as_str().unwrap().to_string();
+    let admin_secret = approve_member_with_role(&app, &owner, &org_id, "admin@example.com", "admin").await;
+    let target_secret = approve_member(&app, &owner, &org_id, "target@example.com").await;
+    let target_account_id = me_account_id(&app, &target_secret).await;
+
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri(format!("/v1/orgs/{org_id}/members/{target_account_id}"))
+                .header("authorization", format!("Bearer {admin_secret}"))
+                .header("content-type", "application/json")
+                .body(Body::from(json!({"role": "owner"}).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn remove_member_blocks_only_owner(db: PgPool) {
+    let app = router(
+        AppState::new(db)
+            .with_rate_limit_auth(false)
+            .with_deployment_mode(DeploymentMode::SelfHosted),
+    );
+
+    let owner = signup_and_get_bearer(&app, "owner@example.com").await;
+    let owner_orgs = get_orgs(&app, &owner).await;
+    let org_id = owner_orgs["memberships"][0]["org_id"].as_str().unwrap().to_string();
+    let owner_account_id = me_account_id(&app, &owner).await;
+
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/v1/orgs/{org_id}/members/{owner_account_id}"))
+                .header("authorization", format!("Bearer {owner}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CONFLICT);
+}
+
+// ---------- org-doc-write gate (D17g) ----------
+
+#[sqlx::test(migrations = "./migrations")]
+async fn member_cannot_write_org_typed_doc(db: PgPool) {
+    let app = router(
+        AppState::new(db)
+            .with_rate_limit_auth(false)
+            .with_deployment_mode(DeploymentMode::SelfHosted),
+    );
+
+    let owner = signup_and_get_bearer(&app, "owner@example.com").await;
+    let owner_orgs = get_orgs(&app, &owner).await;
+    let org_id = owner_orgs["memberships"][0]["org_id"].as_str().unwrap().to_string();
+    let org_tenant_id = owner_orgs["memberships"][0]["tenant_id"].as_str().unwrap().to_string();
+    let member_secret = approve_member(&app, &owner, &org_id, "member@example.com").await;
+
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri(format!("/v1/t/{org_tenant_id}/vault/docs/mission"))
+                .header("authorization", format!("Bearer {member_secret}"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({"source": ORG_DOC_SOURCE}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn org_editor_can_write_org_typed_doc(db: PgPool) {
+    let app = router(
+        AppState::new(db)
+            .with_rate_limit_auth(false)
+            .with_deployment_mode(DeploymentMode::SelfHosted),
+    );
+
+    let owner = signup_and_get_bearer(&app, "owner@example.com").await;
+    let owner_orgs = get_orgs(&app, &owner).await;
+    let org_id = owner_orgs["memberships"][0]["org_id"].as_str().unwrap().to_string();
+    let org_tenant_id = owner_orgs["memberships"][0]["tenant_id"].as_str().unwrap().to_string();
+    let editor_secret =
+        approve_member_with_role(&app, &owner, &org_id, "editor@example.com", "org_editor").await;
+
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri(format!("/v1/t/{org_tenant_id}/vault/docs/mission"))
+                .header("authorization", format!("Bearer {editor_secret}"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({"source": ORG_DOC_SOURCE}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    // Either succeeds (200/201) or fails for unrelated reasons (e.g.
+    // crypto not seeded). What matters: the role gate did NOT 403.
+    assert_ne!(resp.status(), StatusCode::FORBIDDEN);
+}
+
+const ORG_DOC_SOURCE: &str = "---\n\
+id: mission\n\
+type: org\n\
+visibility: org\n\
+tags: []\n\
+links: []\n\
+updated: 2026-04-27\n\
+---\n\
+# Mission\n\
+\n\
+We orchestrate context across teams.\n";
+
 // ---------- helpers ----------
 
 async fn signup_and_get_bearer(app: &axum::Router, email: &str) -> String {
@@ -353,4 +741,108 @@ async fn get_org(app: &axum::Router, bearer: &str, org_id: &str) -> Value {
 async fn read_json(body: Body) -> Value {
     let bytes = to_bytes(body, MAX_BODY).await.unwrap();
     serde_json::from_slice(&bytes).unwrap()
+}
+
+async fn me_account_id(app: &axum::Router, bearer: &str) -> String {
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/v1/auth/me")
+                .header("authorization", format!("Bearer {bearer}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body: Value = read_json(resp.into_body()).await;
+    body["account"]["id"].as_str().unwrap().to_string()
+}
+
+async fn json_get(app: &axum::Router, bearer: &str, uri: &str) -> Value {
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(uri)
+                .header("authorization", format!("Bearer {bearer}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK, "GET {uri} unexpected status");
+    read_json(resp.into_body()).await
+}
+
+async fn post_json(app: &axum::Router, bearer: &str, uri: &str, body: Value) -> Value {
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(uri)
+                .header("authorization", format!("Bearer {bearer}"))
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = resp.status();
+    let body = read_json(resp.into_body()).await;
+    assert!(status.is_success(), "POST {uri} got {status}: {body}");
+    body
+}
+
+async fn patch_json(app: &axum::Router, bearer: &str, uri: &str, body: Value) -> Value {
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri(uri)
+                .header("authorization", format!("Bearer {bearer}"))
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = resp.status();
+    let body = read_json(resp.into_body()).await;
+    assert!(status.is_success(), "PATCH {uri} got {status}: {body}");
+    body
+}
+
+/// Sign up a new account and approve it as a member of `org_id`.
+/// Returns the new member's session bearer.
+async fn approve_member(
+    app: &axum::Router,
+    owner_bearer: &str,
+    org_id: &str,
+    email: &str,
+) -> String {
+    approve_member_with_role(app, owner_bearer, org_id, email, "member").await
+}
+
+async fn approve_member_with_role(
+    app: &axum::Router,
+    owner_bearer: &str,
+    org_id: &str,
+    email: &str,
+    role: &str,
+) -> String {
+    let secret = signup_and_get_bearer(app, email).await;
+    let account_id = me_account_id(app, &secret).await;
+    let _ = post_json(
+        app,
+        owner_bearer,
+        &format!("/v1/orgs/{org_id}/pending/{account_id}/approve"),
+        json!({"role": role}),
+    )
+    .await;
+    secret
 }

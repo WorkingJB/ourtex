@@ -40,12 +40,18 @@ pub struct TenantContext {
 }
 
 impl TenantContext {
-    /// True if the caller can write org-level context or admin the
-    /// tenant. Members can only read + propose (D11). Unused in 2b.2
-    /// because `org/*` writes land in 2c, but pre-wired so we don't
-    /// redo the role plumbing later.
+    /// True if the caller can manage org members (approve pending,
+    /// change roles, remove members). `org_editor` does NOT grant this;
+    /// see `can_write_org` for the narrower org-context-write grant.
     pub fn is_admin(&self) -> bool {
         matches!(self.role.as_str(), "owner" | "admin")
+    }
+
+    /// True if the caller can write `org/*` documents. Adds
+    /// `org_editor` (D17g) on top of `is_admin`. Member can read + propose,
+    /// not write directly.
+    pub fn can_write_org(&self) -> bool {
+        matches!(self.role.as_str(), "owner" | "admin" | "org_editor")
     }
 }
 

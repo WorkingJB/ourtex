@@ -235,6 +235,20 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route("/orgs", get(list_orgs).post(create_org))
         .route("/orgs/:org_id", get(get_org).patch(update_org))
+        .route("/orgs/:org_id/members", get(list_members))
+        .route(
+            "/orgs/:org_id/members/:account_id",
+            axum::routing::patch(patch_member).delete(remove_member),
+        )
+        .route("/orgs/:org_id/pending", get(list_pending))
+        .route(
+            "/orgs/:org_id/pending/:account_id/approve",
+            axum::routing::post(approve_pending),
+        )
+        .route(
+            "/orgs/:org_id/pending/:account_id/reject",
+            axum::routing::post(reject_pending),
+        )
 }
 
 #[derive(Debug, Serialize)]
@@ -406,6 +420,353 @@ async fn create_org(
     Ok(Json(org))
 }
 
+// ---------- admin: members ----------
+
+#[derive(Debug, Clone, Serialize, FromRow)]
+pub struct MemberDetail {
+    pub account_id: Uuid,
+    pub email: String,
+    pub display_name: String,
+    pub role: String,
+    pub joined_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Serialize)]
+struct MembersResponse {
+    members: Vec<MemberDetail>,
+}
+
+async fn list_members(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<SessionContext>,
+    Path(org_id): Path<Uuid>,
+) -> Result<Json<MembersResponse>, ApiError> {
+    require_admin(&state.db, ctx.account_id, org_id).await?;
+    let members: Vec<MemberDetail> = sqlx::query_as(
+        r#"
+        SELECT
+            a.id           AS account_id,
+            a.email        AS email,
+            a.display_name AS display_name,
+            m.role         AS role,
+            m.created_at   AS joined_at
+        FROM memberships m
+        JOIN accounts a       ON a.id = m.account_id
+        JOIN organizations o  ON o.tenant_id = m.tenant_id
+        WHERE o.id = $1
+        ORDER BY m.created_at ASC
+        "#,
+    )
+    .bind(org_id)
+    .fetch_all(&state.db)
+    .await?;
+    Ok(Json(MembersResponse { members }))
+}
+
+#[derive(Debug, Deserialize)]
+struct PatchMemberInput {
+    role: String,
+}
+
+async fn patch_member(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<SessionContext>,
+    Path((org_id, target_account_id)): Path<(Uuid, Uuid)>,
+    Json(input): Json<PatchMemberInput>,
+) -> Result<Json<MemberDetail>, ApiError> {
+    let caller_role = require_admin(&state.db, ctx.account_id, org_id).await?;
+    let new_role = input.role.trim().to_lowercase();
+    if !matches!(
+        new_role.as_str(),
+        "owner" | "admin" | "org_editor" | "member"
+    ) {
+        return Err(ApiError::InvalidArgument(
+            "role must be one of owner, admin, org_editor, member".into(),
+        ));
+    }
+
+    let mut tx = state.db.begin().await?;
+
+    let target_role = current_role(&mut tx, org_id, target_account_id).await?;
+
+    // Only an owner can promote to or demote from owner.
+    if (target_role == "owner" || new_role == "owner") && caller_role != "owner" {
+        return Err(ApiError::Forbidden);
+    }
+
+    // Last-owner guard: if demoting an owner, the org must retain at
+    // least one owner.
+    if target_role == "owner" && new_role != "owner" {
+        ensure_other_owner_remains(&mut tx, org_id, target_account_id).await?;
+    }
+
+    sqlx::query(
+        r#"
+        UPDATE memberships
+        SET role = $1
+        WHERE account_id = $2
+          AND tenant_id = (SELECT tenant_id FROM organizations WHERE id = $3)
+        "#,
+    )
+    .bind(&new_role)
+    .bind(target_account_id)
+    .bind(org_id)
+    .execute(&mut *tx)
+    .await?;
+
+    let updated = fetch_member(&mut tx, org_id, target_account_id).await?;
+    tx.commit().await?;
+    Ok(Json(updated))
+}
+
+async fn remove_member(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<SessionContext>,
+    Path((org_id, target_account_id)): Path<(Uuid, Uuid)>,
+) -> Result<axum::http::StatusCode, ApiError> {
+    let caller_role = require_admin(&state.db, ctx.account_id, org_id).await?;
+
+    let mut tx = state.db.begin().await?;
+    let target_role = current_role(&mut tx, org_id, target_account_id).await?;
+
+    // Only an owner can remove an owner.
+    if target_role == "owner" && caller_role != "owner" {
+        return Err(ApiError::Forbidden);
+    }
+    if target_role == "owner" {
+        ensure_other_owner_remains(&mut tx, org_id, target_account_id).await?;
+    }
+
+    sqlx::query(
+        r#"
+        DELETE FROM memberships
+        WHERE account_id = $1
+          AND tenant_id = (SELECT tenant_id FROM organizations WHERE id = $2)
+        "#,
+    )
+    .bind(target_account_id)
+    .bind(org_id)
+    .execute(&mut *tx)
+    .await?;
+
+    tx.commit().await?;
+    Ok(axum::http::StatusCode::NO_CONTENT)
+}
+
+// ---------- admin: pending signups ----------
+
+#[derive(Debug, Clone, Serialize, FromRow)]
+pub struct PendingDetail {
+    pub id: Uuid,
+    pub account_id: Uuid,
+    pub email: String,
+    pub display_name: String,
+    pub requested_role: String,
+    pub status: String,
+    pub note: Option<String>,
+    pub requested_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Serialize)]
+struct PendingResponse {
+    pending: Vec<PendingDetail>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PendingQuery {
+    /// Filter by status. Defaults to `pending` so the queue view stays
+    /// quiet by default.
+    #[serde(default)]
+    status: Option<String>,
+}
+
+async fn list_pending(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<SessionContext>,
+    Path(org_id): Path<Uuid>,
+    axum::extract::Query(q): axum::extract::Query<PendingQuery>,
+) -> Result<Json<PendingResponse>, ApiError> {
+    require_admin(&state.db, ctx.account_id, org_id).await?;
+    let status = q.status.as_deref().unwrap_or("pending");
+    if !matches!(status, "pending" | "approved" | "rejected" | "all") {
+        return Err(ApiError::InvalidArgument(
+            "status must be pending|approved|rejected|all".into(),
+        ));
+    }
+    let pending: Vec<PendingDetail> = if status == "all" {
+        sqlx::query_as(
+            r#"
+            SELECT
+                p.id             AS id,
+                p.account_id     AS account_id,
+                a.email          AS email,
+                a.display_name   AS display_name,
+                p.requested_role AS requested_role,
+                p.status         AS status,
+                p.note           AS note,
+                p.requested_at   AS requested_at
+            FROM pending_signups p
+            JOIN accounts a ON a.id = p.account_id
+            WHERE p.org_id = $1
+            ORDER BY p.requested_at ASC
+            "#,
+        )
+        .bind(org_id)
+        .fetch_all(&state.db)
+        .await?
+    } else {
+        sqlx::query_as(
+            r#"
+            SELECT
+                p.id             AS id,
+                p.account_id     AS account_id,
+                a.email          AS email,
+                a.display_name   AS display_name,
+                p.requested_role AS requested_role,
+                p.status         AS status,
+                p.note           AS note,
+                p.requested_at   AS requested_at
+            FROM pending_signups p
+            JOIN accounts a ON a.id = p.account_id
+            WHERE p.org_id = $1 AND p.status = $2
+            ORDER BY p.requested_at ASC
+            "#,
+        )
+        .bind(org_id)
+        .bind(status)
+        .fetch_all(&state.db)
+        .await?
+    };
+    Ok(Json(PendingResponse { pending }))
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct ApproveInput {
+    /// Optional override for the role to grant. Defaults to the
+    /// `requested_role` recorded on the pending row.
+    #[serde(default)]
+    role: Option<String>,
+}
+
+async fn approve_pending(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<SessionContext>,
+    Path((org_id, target_account_id)): Path<(Uuid, Uuid)>,
+    Json(input): Json<ApproveInput>,
+) -> Result<Json<MemberDetail>, ApiError> {
+    let caller_role = require_admin(&state.db, ctx.account_id, org_id).await?;
+
+    let mut tx = state.db.begin().await?;
+
+    // Pending row + ownership of granted role.
+    let pending: Option<(Uuid, String, String)> = sqlx::query_as(
+        r#"
+        SELECT id, status, requested_role
+        FROM pending_signups
+        WHERE account_id = $1 AND org_id = $2
+        FOR UPDATE
+        "#,
+    )
+    .bind(target_account_id)
+    .bind(org_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let Some((pending_id, status, requested_role)) = pending else {
+        return Err(ApiError::NotFound);
+    };
+    if status != "pending" {
+        return Err(ApiError::Conflict("pending row already decided"));
+    }
+
+    let role = input.role.unwrap_or(requested_role).to_lowercase();
+    if !matches!(role.as_str(), "owner" | "admin" | "org_editor" | "member") {
+        return Err(ApiError::InvalidArgument(
+            "role must be one of owner, admin, org_editor, member".into(),
+        ));
+    }
+    if role == "owner" && caller_role != "owner" {
+        return Err(ApiError::Forbidden);
+    }
+
+    let tenant_id: (Uuid,) =
+        sqlx::query_as("SELECT tenant_id FROM organizations WHERE id = $1")
+            .bind(org_id)
+            .fetch_one(&mut *tx)
+            .await?;
+
+    sqlx::query(
+        r#"
+        INSERT INTO memberships (tenant_id, account_id, role)
+        VALUES ($1, $2, $3)
+        ON CONFLICT (tenant_id, account_id) DO UPDATE SET role = EXCLUDED.role
+        "#,
+    )
+    .bind(tenant_id.0)
+    .bind(target_account_id)
+    .bind(&role)
+    .execute(&mut *tx)
+    .await?;
+
+    sqlx::query(
+        r#"
+        UPDATE pending_signups
+        SET status = 'approved', decided_by = $1, decided_at = now()
+        WHERE id = $2
+        "#,
+    )
+    .bind(ctx.account_id)
+    .bind(pending_id)
+    .execute(&mut *tx)
+    .await?;
+
+    let member = fetch_member(&mut tx, org_id, target_account_id).await?;
+    tx.commit().await?;
+    Ok(Json(member))
+}
+
+async fn reject_pending(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<SessionContext>,
+    Path((org_id, target_account_id)): Path<(Uuid, Uuid)>,
+) -> Result<axum::http::StatusCode, ApiError> {
+    require_admin(&state.db, ctx.account_id, org_id).await?;
+
+    let mut tx = state.db.begin().await?;
+    let pending: Option<(Uuid, String)> = sqlx::query_as(
+        r#"
+        SELECT id, status
+        FROM pending_signups
+        WHERE account_id = $1 AND org_id = $2
+        FOR UPDATE
+        "#,
+    )
+    .bind(target_account_id)
+    .bind(org_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let Some((pending_id, status)) = pending else {
+        return Err(ApiError::NotFound);
+    };
+    if status != "pending" {
+        return Err(ApiError::Conflict("pending row already decided"));
+    }
+
+    sqlx::query(
+        r#"
+        UPDATE pending_signups
+        SET status = 'rejected', decided_by = $1, decided_at = now()
+        WHERE id = $2
+        "#,
+    )
+    .bind(ctx.account_id)
+    .bind(pending_id)
+    .execute(&mut *tx)
+    .await?;
+
+    tx.commit().await?;
+    Ok(axum::http::StatusCode::NO_CONTENT)
+}
+
 // ---------- helpers ----------
 
 async fn require_membership(
@@ -426,6 +787,93 @@ async fn require_membership(
     .fetch_optional(db)
     .await?;
     row.map(|(role,)| role).ok_or(ApiError::NotFound)
+}
+
+/// Combines the membership check and the admin-or-owner gate so admin
+/// endpoints don't have to duplicate the role match. Returns the
+/// caller's role so handlers can branch (e.g. owner-only operations).
+async fn require_admin(
+    db: &sqlx::PgPool,
+    account_id: Uuid,
+    org_id: Uuid,
+) -> Result<String, ApiError> {
+    let role = require_membership(db, account_id, org_id).await?;
+    if !matches!(role.as_str(), "owner" | "admin") {
+        return Err(ApiError::Forbidden);
+    }
+    Ok(role)
+}
+
+async fn current_role(
+    tx: &mut Transaction<'_, Postgres>,
+    org_id: Uuid,
+    account_id: Uuid,
+) -> Result<String, ApiError> {
+    let row: Option<(String,)> = sqlx::query_as(
+        r#"
+        SELECT m.role
+        FROM memberships m
+        JOIN organizations o ON o.tenant_id = m.tenant_id
+        WHERE m.account_id = $1 AND o.id = $2
+        FOR UPDATE OF m
+        "#,
+    )
+    .bind(account_id)
+    .bind(org_id)
+    .fetch_optional(&mut **tx)
+    .await?;
+    row.map(|(role,)| role).ok_or(ApiError::NotFound)
+}
+
+/// Refuses if `target_account_id` is the only `owner` of `org_id`.
+/// Use before demoting / removing an owner.
+async fn ensure_other_owner_remains(
+    tx: &mut Transaction<'_, Postgres>,
+    org_id: Uuid,
+    target_account_id: Uuid,
+) -> Result<(), ApiError> {
+    let other_owners: (i64,) = sqlx::query_as(
+        r#"
+        SELECT COUNT(*)
+        FROM memberships m
+        JOIN organizations o ON o.tenant_id = m.tenant_id
+        WHERE o.id = $1 AND m.role = 'owner' AND m.account_id <> $2
+        "#,
+    )
+    .bind(org_id)
+    .bind(target_account_id)
+    .fetch_one(&mut **tx)
+    .await?;
+    if other_owners.0 == 0 {
+        return Err(ApiError::Conflict("org must retain at least one owner"));
+    }
+    Ok(())
+}
+
+async fn fetch_member(
+    tx: &mut Transaction<'_, Postgres>,
+    org_id: Uuid,
+    account_id: Uuid,
+) -> Result<MemberDetail, ApiError> {
+    let row: Option<MemberDetail> = sqlx::query_as(
+        r#"
+        SELECT
+            a.id           AS account_id,
+            a.email        AS email,
+            a.display_name AS display_name,
+            m.role         AS role,
+            m.created_at   AS joined_at
+        FROM memberships m
+        JOIN accounts a       ON a.id = m.account_id
+        JOIN organizations o  ON o.tenant_id = m.tenant_id
+        WHERE m.account_id = $1 AND o.id = $2
+        "#,
+    )
+    .bind(account_id)
+    .bind(org_id)
+    .fetch_optional(&mut **tx)
+    .await?;
+    row.ok_or(ApiError::NotFound)
 }
 
 async fn fetch_org(
