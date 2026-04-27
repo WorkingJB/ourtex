@@ -23,11 +23,15 @@
 //! the JSON-RPC envelope as standard MCP error codes (HTTP 200 with
 //! `error.code` + `error.data.tag`, per `MCP.md` §7).
 //!
-//! Tools: `context_search`, `context_get`, `context_list` — same shape
-//! as stdio. Resources: `resources/list` + `resources/read` — also same
-//! shape; `resources/subscribe` is omitted with SSE because the server
-//! has nowhere to push the resulting `notifications/resources/updated`.
-//! `context.propose` is slice 4 of Phase 2b.5; not in this slice.
+//! Tools: `context_search`, `context_get`, `context_list`,
+//! `context_propose` — same shape as stdio. Resources: `resources/list`
+//! + `resources/read` — also same shape; `resources/subscribe` is
+//! omitted with SSE because the server has nowhere to push the
+//! resulting `notifications/resources/updated`.
+//!
+//! `context_propose` writes a row into the `proposals` table for
+//! review (`proposals_disabled` if the bearer's mode is `read`); the
+//! review queue + approve/reject endpoints live in `crate::proposals`.
 
 use crate::{
     audit::{self, Actor, AppendRecord, Outcome},
@@ -50,9 +54,11 @@ use orchext_mcp::{
     rpc::{Id, Request as RpcRequest, Response as RpcResponse, RpcError},
     tools::{
         tool_definitions, GetInput, GetOutput, ListInput, ListOutput, ListResultItem,
-        SearchInput, SearchOutput, SearchResultHit, TOOL_GET, TOOL_LIST, TOOL_SEARCH,
+        ProposeInput, ProposeOutput, SearchInput, SearchOutput, SearchResultHit, TOOL_GET,
+        TOOL_LIST, TOOL_PROPOSE, TOOL_SEARCH,
     },
 };
+use rand::RngCore;
 use serde_json::{json, Value};
 use sqlx::FromRow;
 use uuid::Uuid;
@@ -109,6 +115,7 @@ struct McpToken {
     id: String,
     tenant_id: Uuid,
     issued_by: Uuid,
+    label: String,
     scope: Vec<String>,
     mode: String,
     max_docs: i32,
@@ -207,6 +214,7 @@ async fn handle_tools_call(
         TOOL_SEARCH => context_search(state, token, args).await?,
         TOOL_GET => context_get(state, token, args).await?,
         TOOL_LIST => context_list(state, token, args).await?,
+        TOOL_PROPOSE => context_propose(state, token, args).await?,
         other => return Err(McpError::MethodNotFound(format!("tool: {other}"))),
     };
 
@@ -463,6 +471,127 @@ async fn context_list(
     .map_err(internal)
 }
 
+// ---------- context_propose ----------
+
+async fn context_propose(
+    state: &AppState,
+    token: &McpToken,
+    args: Value,
+) -> Result<Value, McpError> {
+    let input: ProposeInput = serde_json::from_value(args)
+        .map_err(|e| McpError::InvalidArgument(e.to_string()))?;
+
+    if token.mode != "read_propose" {
+        audit_denied(state, token, TOOL_PROPOSE, Some(input.id.clone())).await;
+        return Err(McpError::ProposalsDisabled);
+    }
+
+    input
+        .patch
+        .validate()
+        .map_err(|e| McpError::InvalidArgument(e.to_string()))?;
+
+    // Resolve the target. Out-of-scope and missing both collapse to
+    // NotAuthorized — same enumeration-resistance rule as context_get.
+    #[derive(FromRow)]
+    struct DocRow {
+        visibility: String,
+        version: String,
+    }
+    let row: Option<DocRow> = sqlx::query_as(
+        r#"
+        SELECT visibility, version
+        FROM documents
+        WHERE tenant_id = $1 AND doc_id = $2
+        "#,
+    )
+    .bind(token.tenant_id)
+    .bind(&input.id)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(|e| McpError::Server(e.to_string()))?;
+
+    let Some(row) = row else {
+        audit_denied(state, token, TOOL_PROPOSE, Some(input.id.clone())).await;
+        return Err(McpError::NotAuthorized);
+    };
+    if !scope_allows(&token.scope, &row.visibility) {
+        audit_denied(state, token, TOOL_PROPOSE, Some(input.id.clone())).await;
+        return Err(McpError::NotAuthorized);
+    }
+
+    // Best-effort version check at propose time. The authoritative
+    // re-check happens at approve time inside a transaction (see
+    // `proposals::approve`); surfacing the conflict here saves the
+    // reviewer a round-trip when the agent is clearly stale.
+    if row.version != input.base_version {
+        audit_denied(state, token, TOOL_PROPOSE, Some(input.id.clone())).await;
+        return Err(McpError::VersionConflict);
+    }
+
+    let proposal_id = generate_proposal_id();
+    let patch_json = serde_json::to_value(&input.patch).map_err(internal)?;
+
+    let mut tx = state
+        .db
+        .begin()
+        .await
+        .map_err(|e| McpError::Server(e.to_string()))?;
+
+    sqlx::query(
+        r#"
+        INSERT INTO proposals
+            (id, tenant_id, doc_id, base_version, patch, reason,
+             actor_token_id, actor_token_label)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        "#,
+    )
+    .bind(&proposal_id)
+    .bind(token.tenant_id)
+    .bind(&input.id)
+    .bind(&input.base_version)
+    .bind(&patch_json)
+    .bind(input.reason.as_deref())
+    .bind(&token.id)
+    .bind(&token.label)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| McpError::Server(e.to_string()))?;
+
+    if let Err(e) = audit::append(
+        &mut tx,
+        token.tenant_id,
+        AppendRecord {
+            actor: Actor::Token(token.id.clone()),
+            action: TOOL_PROPOSE.to_string(),
+            document_id: Some(input.id.clone()),
+            scope_used: token.scope.clone(),
+            outcome: Outcome::Ok,
+        },
+    )
+    .await
+    {
+        return Err(McpError::Server(format!("audit append: {e:?}")));
+    }
+
+    tx.commit()
+        .await
+        .map_err(|e| McpError::Server(e.to_string()))?;
+
+    let output = ProposeOutput {
+        proposal_id,
+        status: "pending",
+    };
+    serde_json::to_value(output).map_err(internal)
+}
+
+fn generate_proposal_id() -> String {
+    let date = Utc::now().format("%Y%m%d");
+    let mut bytes = [0u8; 4];
+    rand::thread_rng().fill_bytes(&mut bytes);
+    format!("prop-{date}-{}", hex::encode(bytes))
+}
+
 // ---------- resources/list + resources/read ----------
 
 #[derive(FromRow)]
@@ -627,6 +756,7 @@ async fn resolve_token(
         id: String,
         tenant_id: Uuid,
         issued_by: Uuid,
+        label: String,
         token_hash: String,
         scope: Vec<String>,
         mode: String,
@@ -638,7 +768,7 @@ async fn resolve_token(
 
     let row: Option<Row> = sqlx::query_as(
         r#"
-        SELECT id, tenant_id, issued_by, token_hash, scope, mode,
+        SELECT id, tenant_id, issued_by, label, token_hash, scope, mode,
                max_docs, max_bytes, expires_at, revoked_at
         FROM mcp_tokens
         WHERE token_prefix = $1
@@ -677,6 +807,7 @@ async fn resolve_token(
         id: row.id,
         tenant_id: row.tenant_id,
         issued_by: row.issued_by,
+        label: row.label,
         scope: row.scope,
         mode: row.mode,
         max_docs: row.max_docs,
@@ -811,7 +942,6 @@ async fn audit_record(
     // resolved-token struct so future per-issuer features (e.g.
     // per-issuer rate limiting) can read it without another lookup.
     let _ = token.issued_by;
-    let _ = token.mode;
 }
 
 #[cfg(test)]
@@ -840,6 +970,7 @@ mod tests {
             id: "t".into(),
             tenant_id: Uuid::nil(),
             issued_by: Uuid::nil(),
+            label: "test".into(),
             scope: vec!["work".into(), "public".into(), "personal".into()],
             mode: "read".into(),
             max_docs: 20,
@@ -855,6 +986,7 @@ mod tests {
             id: "t".into(),
             tenant_id: Uuid::nil(),
             issued_by: Uuid::nil(),
+            label: "test".into(),
             scope: vec!["work".into()],
             mode: "read".into(),
             max_docs: 20,
@@ -870,6 +1002,7 @@ mod tests {
             id: "t".into(),
             tenant_id: Uuid::nil(),
             issued_by: Uuid::nil(),
+            label: "test".into(),
             scope: vec!["work".into(), "public".into()],
             mode: "read".into(),
             max_docs: 20,

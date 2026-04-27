@@ -19,6 +19,7 @@ pub mod idx;
 pub mod mcp;
 pub mod oauth;
 pub mod password;
+pub mod proposals;
 pub mod session_keys;
 pub mod sessions;
 pub mod tenants;
@@ -95,6 +96,7 @@ pub fn router(state: AppState) -> Router {
         .merge(tokens::router())
         .merge(audit::router())
         .merge(crypto_api::router())
+        .merge(proposals::router())
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             tenants::tenant_auth,

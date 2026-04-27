@@ -19,9 +19,10 @@ context as easily as it reads its own documentation.
    shaped like the vault — `id`, frontmatter, body — not provider-
    specific structures. An agent that can read a markdown file can
    consume a Orchext response.
-3. **Read-only unless the user is watching.** The v1 surface is
-   read-only. Writes (`context.propose`) are specified but not shipped
-   until the review UI exists.
+3. **Read-only unless the user is watching.** Writes go through
+   `context.propose` — proposals land in a review queue and never
+   mutate the vault until a session-authed user approves them. Read
+   tools work for any token; propose requires `mode: read+propose`.
 4. **No provider lock-in for the user.** Any MCP-capable agent works
    the same way. Orchext never shapes its responses for a specific model.
 
@@ -85,7 +86,7 @@ record:
 |------------------|----------------------------------------------------------------|
 | `label`          | Human-readable ("Claude — work laptop"). Shown in the UI.      |
 | `scope`          | Set of `visibility` labels this token may read. Non-empty.     |
-| `mode`           | `read` or `read+propose`. v1 effectively ignores `propose`.    |
+| `mode`           | `read` or `read+propose`. `propose` mode is required to call `context.propose`. |
 | `expires_at`     | Required. Default 90 days. Max 365 days.                       |
 | `limits.max_docs`| Max documents returned per request. Default 20. Hard cap 100.  |
 | `limits.max_bytes`| Max total body bytes per request. Default 64 KiB. Hard cap 1 MiB. |
@@ -290,7 +291,7 @@ Listing never returns bodies; it is a cheap index lookup. Agents
 should follow up with `context.get` for any document they need in
 full.
 
-### 5.4 `context.propose` *(specified; ships in Phase 2b)*
+### 5.4 `context.propose`
 
 Submit a change to a document for user review.
 
@@ -313,8 +314,11 @@ Submit a change to a document for user review.
 - `patch` supports `frontmatter` (merge), `body_replace` (full
   replacement), and `body_append` (string append). Exactly one of
   `body_replace` / `body_append` may be set.
-- Proposals land in `.orchext/proposals/<id>-<timestamp>.json`. The
-  desktop app surfaces them in a review queue.
+- For stdio MCP against a local vault, proposals land in
+  `<vault>/.orchext/proposals/<proposal_id>.json`. For HTTP MCP
+  against `orchext-server`, proposals land in the server's
+  `proposals` table. Both desktop and web clients surface them in a
+  review queue.
 
 **Output**
 

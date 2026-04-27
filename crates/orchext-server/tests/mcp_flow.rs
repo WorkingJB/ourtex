@@ -234,7 +234,7 @@ async fn mcp_initialize_returns_capabilities(db: PgPool) {
 }
 
 #[sqlx::test(migrations = "./migrations")]
-async fn mcp_tools_list_returns_three_tools(db: PgPool) {
+async fn mcp_tools_list_returns_full_tool_set(db: PgPool) {
     let app = router(AppState::new(db).with_rate_limit_auth(false));
     let (sess, tid) = bootstrap(&app, "tools@example.com").await;
     let token = issue_token(&app, &sess, &tid, "tools test", &["work"]).await;
@@ -250,6 +250,7 @@ async fn mcp_tools_list_returns_three_tools(db: PgPool) {
     assert!(names.contains(&"context_search"));
     assert!(names.contains(&"context_get"));
     assert!(names.contains(&"context_list"));
+    assert!(names.contains(&"context_propose"));
 }
 
 // ---------- context_search ----------

@@ -146,6 +146,62 @@ async fn fixture_with_notifier(
     }
 }
 
+/// Spin up a server wired with `Mode::ReadPropose` and a proposals
+/// spool dir under the temp vault root. Returns the spool path so tests
+/// can assert on the dropped JSON files.
+async fn fixture_propose(scope_labels: &[&str]) -> (Fixture, std::path::PathBuf) {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path().to_path_buf();
+    let vault = Arc::new(PlainFileDriver::new(root.clone()));
+    vault
+        .write(
+            &DocumentId::new("rel-jane").unwrap(),
+            &doc(
+                "rel-jane",
+                "relationships",
+                Visibility::Work,
+                "Jane Smith",
+                "My manager at Acme.",
+                &["manager"],
+                None,
+            ),
+        )
+        .await
+        .unwrap();
+
+    let orchext_dir = root.join(".orchext");
+    let proposals_dir = orchext_dir.join("proposals");
+    tokio::fs::create_dir_all(&proposals_dir).await.unwrap();
+    let index = Arc::new(Index::open(orchext_dir.join("index.sqlite")).await.unwrap());
+    index.reindex_from(&*vault).await.unwrap();
+    let auth = Arc::new(TokenService::open(orchext_dir.join("tokens.json")).await.unwrap());
+    let audit_path = orchext_dir.join("audit.jsonl");
+    let audit = Arc::new(AuditWriter::open(&audit_path).await.unwrap());
+    let scope = Scope::new(scope_labels.iter().map(|s| s.to_string())).unwrap();
+    let issued = auth
+        .issue(IssueRequest {
+            label: "agent".into(),
+            scope,
+            mode: Mode::ReadPropose,
+            limits: Default::default(),
+            ttl: None,
+        })
+        .await
+        .unwrap();
+    let token = auth.authenticate(issued.secret.expose()).await.unwrap();
+    let vault_arc: Arc<dyn VaultDriver> = vault;
+    let server = Server::new(vault_arc, index, auth, audit, token)
+        .with_proposals_dir(proposals_dir.clone());
+    (
+        Fixture {
+            _tmp: tmp,
+            server,
+            audit_path,
+        },
+        proposals_dir,
+    )
+}
+
 fn req(id: i64, method: &str, params: Value) -> Request {
     serde_json::from_value(json!({
         "jsonrpc": "2.0",
@@ -625,3 +681,171 @@ async fn fs_watcher_reindexes_and_notifies() {
     assert!(items.iter().any(|i| i.id == "rel-new"));
 }
 
+
+// ---------- context_propose (stdio) ----------
+
+#[tokio::test]
+async fn propose_writes_spool_file_and_leaves_doc_unchanged() {
+    let (fx, spool) = fixture_propose(&["work"]).await;
+
+    // Get current version via context_get so the propose carries a
+    // fresh base_version (same dance an agent would do).
+    let got = call(
+        &fx.server,
+        "tools/call",
+        tool_call("context_get", json!({ "id": "rel-jane" })),
+    )
+    .await;
+    let version = got["structuredContent"]["version"].as_str().unwrap().to_string();
+
+    let result = call(
+        &fx.server,
+        "tools/call",
+        tool_call(
+            "context_propose",
+            json!({
+                "id": "rel-jane",
+                "base_version": version,
+                "patch": {
+                    "frontmatter": { "tags": ["manager", "mentor"] },
+                    "body_append": "\n\nMentioned mentoring 2026-04-27."
+                },
+                "reason": "weekly 1:1"
+            }),
+        ),
+    )
+    .await;
+    let proposal_id = result["structuredContent"]["proposal_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(result["structuredContent"]["status"], "pending");
+
+    // Spool now has exactly one proposal file with the expected shape.
+    let path = spool.join(format!("{proposal_id}.json"));
+    let bytes = tokio::fs::read(&path).await.unwrap();
+    let payload: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(payload["proposal_id"], proposal_id);
+    assert_eq!(payload["doc_id"], "rel-jane");
+    assert_eq!(payload["status"], "pending");
+    assert_eq!(payload["base_version"], version);
+    assert!(payload["patch"]["body_append"].is_string());
+
+    // Doc on disk is untouched: reading it again returns the same
+    // version we proposed against.
+    let after = call(
+        &fx.server,
+        "tools/call",
+        tool_call("context_get", json!({ "id": "rel-jane" })),
+    )
+    .await;
+    assert_eq!(
+        after["structuredContent"]["version"].as_str().unwrap(),
+        version
+    );
+}
+
+#[tokio::test]
+async fn propose_rejects_stale_base_version() {
+    let (fx, _spool) = fixture_propose(&["work"]).await;
+    let err = call_err(
+        &fx.server,
+        "tools/call",
+        tool_call(
+            "context_propose",
+            json!({
+                "id": "rel-jane",
+                "base_version": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+                "patch": { "body_append": "x" },
+                "reason": "stale"
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(err["code"], -32003);
+    assert_eq!(err["data"]["tag"], "version_conflict");
+}
+
+#[tokio::test]
+async fn propose_without_proposals_dir_is_disabled() {
+    // Same setup as fixture_propose but skip with_proposals_dir — the
+    // server should refuse the call uniformly with `proposals_disabled`,
+    // matching the read-only-token path.
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path().to_path_buf();
+    let vault = Arc::new(PlainFileDriver::new(root.clone()));
+    vault
+        .write(
+            &DocumentId::new("rel-jane").unwrap(),
+            &doc(
+                "rel-jane",
+                "relationships",
+                Visibility::Work,
+                "Jane",
+                ".",
+                &[],
+                None,
+            ),
+        )
+        .await
+        .unwrap();
+    let orchext_dir = root.join(".orchext");
+    let index = Arc::new(Index::open(orchext_dir.join("index.sqlite")).await.unwrap());
+    index.reindex_from(&*vault).await.unwrap();
+    let auth = Arc::new(TokenService::open(orchext_dir.join("tokens.json")).await.unwrap());
+    let audit = Arc::new(AuditWriter::open(orchext_dir.join("audit.jsonl")).await.unwrap());
+    let scope = Scope::new(["work".to_string()]).unwrap();
+    let issued = auth
+        .issue(IssueRequest {
+            label: "agent".into(),
+            scope,
+            mode: Mode::ReadPropose,
+            limits: Default::default(),
+            ttl: None,
+        })
+        .await
+        .unwrap();
+    let token = auth.authenticate(issued.secret.expose()).await.unwrap();
+    let vault_arc: Arc<dyn VaultDriver> = vault;
+    let server = Server::new(vault_arc, index, auth, audit, token);
+
+    let err = call_err(
+        &server,
+        "tools/call",
+        tool_call(
+            "context_propose",
+            json!({
+                "id": "rel-jane",
+                "base_version": "sha256:0",
+                "patch": { "body_append": "x" },
+                "reason": "no spool"
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(err["code"], -32007);
+    assert_eq!(err["data"]["tag"], "proposals_disabled");
+}
+
+#[tokio::test]
+async fn read_only_mode_rejects_propose() {
+    // The default fixture issues `Mode::Read`; even with a hypothetical
+    // proposals dir, the mode gate must fire first.
+    let fx = fixture(&["work"]).await;
+    let err = call_err(
+        &fx.server,
+        "tools/call",
+        tool_call(
+            "context_propose",
+            json!({
+                "id": "rel-jane",
+                "base_version": "sha256:0",
+                "patch": { "body_append": "x" },
+                "reason": "read mode"
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(err["code"], -32007);
+    assert_eq!(err["data"]["tag"], "proposals_disabled");
+}

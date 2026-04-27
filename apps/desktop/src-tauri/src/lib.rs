@@ -2,6 +2,7 @@
 
 mod commands;
 mod onboarding;
+mod proposals;
 mod settings;
 mod state;
 mod watch;
@@ -45,6 +46,9 @@ pub fn run() {
             commands::token_issue,
             commands::token_revoke,
             commands::audit_list,
+            proposals::proposal_list,
+            proposals::proposal_approve,
+            proposals::proposal_reject,
         ])
         .run(tauri::generate_context!())
         .expect("error while running orchext-desktop");

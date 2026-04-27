@@ -4,12 +4,14 @@ import { DocumentsView } from "./DocumentsView";
 import { OnboardingView } from "./OnboardingView";
 import { TokensView } from "./TokensView";
 import { AuditView } from "./AuditView";
+import { ProposalsView } from "./ProposalsView";
 import { WorkspaceSwitcher } from "./WorkspaceSwitcher";
 
-type View = "documents" | "onboarding" | "tokens" | "audit";
+type View = "documents" | "onboarding" | "proposals" | "tokens" | "audit";
 
 type Counts = {
   documents: number;
+  proposals: number;
   tokens: number;
   audit: number;
 };
@@ -27,17 +29,28 @@ export function Layout({
   );
   const [counts, setCounts] = useState<Counts>({
     documents: vault.document_count,
+    proposals: 0,
     tokens: 0,
     audit: 0,
   });
 
   const refreshCounts = useCallback(async () => {
-    const [docs, tokens, audit] = await Promise.all([
+    const [docs, proposals, tokens, audit] = await Promise.all([
       api.docList().then((l) => l.length),
-      api.tokenList().then((l) => l.length),
-      api.auditList(1).then((p) => p.total),
+      api
+        .proposalList("pending")
+        .then((l) => l.length)
+        .catch(() => 0),
+      api
+        .tokenList()
+        .then((l) => l.length)
+        .catch(() => 0),
+      api
+        .auditList(1)
+        .then((p) => p.total)
+        .catch(() => 0),
     ]);
-    setCounts({ documents: docs, tokens, audit });
+    setCounts({ documents: docs, proposals, tokens, audit });
   }, []);
 
   useEffect(() => {
@@ -50,7 +63,12 @@ export function Layout({
   // against the newly-active vault.
   useEffect(() => {
     setView(vault.document_count === 0 ? "onboarding" : "documents");
-    setCounts({ documents: vault.document_count, tokens: 0, audit: 0 });
+    setCounts({
+      documents: vault.document_count,
+      proposals: 0,
+      tokens: 0,
+      audit: 0,
+    });
     void refreshCounts();
   }, [vault.workspace_id, vault.document_count, refreshCounts]);
 
@@ -74,6 +92,12 @@ export function Layout({
             count={0}
             active={view === "onboarding"}
             onClick={() => setView("onboarding")}
+          />
+          <NavBtn
+            label="Proposals"
+            count={counts.proposals}
+            active={view === "proposals"}
+            onClick={() => setView("proposals")}
           />
           <NavBtn
             label="Tokens"
@@ -100,6 +124,7 @@ export function Layout({
               }}
             />
           )}
+          {view === "proposals" && <ProposalsView onMutated={refreshCounts} />}
           {view === "tokens" && <TokensView onMutated={refreshCounts} />}
           {view === "audit" && <AuditView />}
         </main>

@@ -15,18 +15,22 @@ that limit, consolidate scope or break out a sub-phase.
 
 ## Snapshot
 
-**Last updated:** 2026-04-26
+**Last updated:** 2026-04-27
 
 **Toolchain:** Rust 1.95.0 stable (rustup) + Node 20+ for the web /
 desktop frontends. wasm-pack 0.14 drives the browser crypto build.
 Workspace at repo root.
 
-**Test totals:** 214/214 passing with `DATABASE_URL` set; 158/158
+**Test totals:** 224/224 passing with `DATABASE_URL` set; 162/162
 without the DB-required suite (Rust only — `apps/web` has no JS test
 suite yet). +52 across the OAuth + MCP HTTP rounds, +4 in the
 initial deployment-hardening pass (1 `/readyz` happy-path, 3 CORS
 layer tests), +1 in the post-launch hardening pass (auth rate-limit
-XFF regression — pins the signup/login fix below).
+XFF regression — pins the signup/login fix below), +10 in slice 4
+(`context.propose`): +6 server integration tests covering the
+propose → list → approve / reject paths and `version_conflict` /
+`proposals_disabled` gates, +4 stdio MCP unit tests for the
+`.orchext/proposals/` spool path.
 
 **Scope shuffle 2026-04-25:** four scope changes folded in one pass.
 (1) **Graph view dropped.** Desktop's `GraphView.tsx` +
@@ -63,9 +67,9 @@ task aggregation + agent orchestration. Plan detail in
 | `orchext-audit`  | ✅ shipped     | 2    | 5           | Hash-chained JSONL log                 |
 | `orchext-auth`   | ✅ shipped     | 11   | 9           | Opaque tokens + Argon2id + scopes      |
 | `orchext-index`  | ✅ shipped     | 4    | 6           | SQLite + FTS5; search / graph / filter |
-| `orchext-mcp`    | ✅ shipped     | 11   | 22          | JSON-RPC + stdio; rate limit + fs watcher |
+| `orchext-mcp`    | ✅ shipped     | 11   | 26          | JSON-RPC + stdio; rate limit + fs watcher; `context_propose` spool |
 | `orchext-desktop`| ✅ 2a + 2b.2 + 2b.3 | 7 | —           | Multi-vault + remote connect + unlock/lock |
-| `orchext-server` | ✅ 2b.3 + 2b.5 | 41 | 44          | Auth + vault + index + tokens + audit + crypto + OAuth + MCP HTTP + readiness + CORS |
+| `orchext-server` | ✅ 2b.3 + 2b.5 | 45 | 50          | Auth + vault + index + tokens + audit + crypto + OAuth + MCP HTTP + proposals + readiness + CORS |
 | `orchext-sync`   | ✅ 2b.2 + 2b.3 | 0   | —           | `RemoteVaultDriver` + crypto control calls |
 | `orchext-oauth-client` | ✅ 2b.5 | 9 | —           | PKCE agent helper + `orchext-oauth` CLI    |
 | `orchext-crypto` | ✅ 2b.3 + wasm32 | 13 | —           | Argon2id KDF + XChaCha20-Poly1305 AEAD; browser build clean |
@@ -135,10 +139,32 @@ format reuses orchext-mcp's rpc envelope + error codes + tool
 definitions, so HTTP and stdio agents see byte-identical JSON.
 SSE (`GET /v1/mcp/events`) + `notifications/*` deferred until a
 real remote MCP client appears (every current MCP client uses
-stdio); `resources/subscribe` rides with that. Last 2b.5 slice:
-**`context.propose`** write-back flow
+stdio); `resources/subscribe` rides with that.
+**`context.propose` — shipped 2026-04-27**
 *([Notion](https://www.notion.so/34b47fdae49a8090a361ca985f9ebd6c))*.
-Forward plan in [`phases/phase-2-plan.md`](phases/phase-2-plan.md).
+Four surfaces in one slice. (1) **Server schema + tool** — migration
+`0006_proposals.sql` adds the `proposals` table; `context_propose`
+exists on both stdio and HTTP MCP, gated on `mode = read_propose`,
+with a best-effort base-version check at propose time and the
+authoritative re-check inside the approve transaction.
+(2) **Server review endpoints** — admin-gated `GET /v1/t/:tid/proposals`
+(filterable by status), `GET /v1/t/:tid/proposals/:id`,
+`POST /v1/t/:tid/proposals/:id/approve` (applies the patch,
+re-encrypts under the live session key when the row was encrypted,
+bumps `documents.version`, audit-logs `proposal.approve`),
+`POST /v1/t/:tid/proposals/:id/reject` (status flip + audit). Patch
+merge is shallow on frontmatter (`null` clears) and exactly-zero-or-
+one body op (`body_replace` / `body_append`).
+(3) **Web UI** — new `/proposals` pane in `apps/web` with
+pending / approved / rejected / all filters, frontmatter + body diff
+preview, approve / reject buttons that surface `version_conflict`
+inline. (4) **Desktop UI** — same pane wired into `apps/desktop`,
+unified DTO across local + remote backends so the React side
+renders identically. Local workspaces back the pane by reading
+`.orchext/proposals/<id>.json` files dropped by stdio `orchext-mcp`;
+remote workspaces hit the new server endpoints via a
+`crates/orchext-sync` `proposals` module. Phase 2b.5 closes with
+this slice. Forward plan in [`phases/phase-2-plan.md`](phases/phase-2-plan.md).
 
 **Just shipped:** Phase 2b.4 closed 2026-04-25. Web client gained
 login + signup, tenant picker, browser unlock with WASM-side
@@ -194,11 +220,7 @@ phase docs themselves.
 
 ### In flight
 
-- [`phases/phase-2-plan.md`](phases/phase-2-plan.md) (Phase 2b.5) —
-  Auth hardening *([Notion: Done](https://www.notion.so/34d47fdae49a81d4add7cfd2b7151ca8))*,
-  then OAuth 2.1 PKCE *([Notion](https://www.notion.so/34b47fdae49a80f8bf91d7f85aa1590c))*,
-  MCP HTTP/SSE *([Notion](https://www.notion.so/34b47fdae49a80cfaf2deabe4f71c339))*,
-  `context.propose` *([Notion](https://www.notion.so/34b47fdae49a8090a361ca985f9ebd6c))*.
+_(none — Phase 2b.5 closed 2026-04-27 with `context.propose`.)_
 
 ### Planned
 
@@ -287,7 +309,7 @@ phase docs themselves.
 
 - Cloud sync + session-bound decryption — shipped, see
   [`phases/phase-2b3-encryption.md`](phases/phase-2b3-encryption.md).
-- `context.propose` write-back flow — planned for Phase 2b.5.
+- `context.propose` write-back flow — shipped 2026-04-27 (Phase 2b.5).
 - HTTP API — shipped, see
   [`phases/phase-2b2-remote-vault.md`](phases/phase-2b2-remote-vault.md).
 - Desktop installers / signed builds — planned for Phase 4

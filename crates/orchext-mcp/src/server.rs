@@ -3,16 +3,19 @@ use crate::ratelimit::RateLimiter;
 use crate::resources::{self, resource_definitions};
 use crate::rpc::{Id, Notification, Request, Response};
 use crate::tools::{
-    tool_definitions, GetInput, GetOutput, ListInput, ListOutput, ListResultItem, SearchInput,
-    SearchOutput, SearchResultHit, TOOL_GET, TOOL_LIST, TOOL_SEARCH,
+    tool_definitions, GetInput, GetOutput, ListInput, ListOutput, ListResultItem, ProposeInput,
+    ProposeOutput, SearchInput, SearchOutput, SearchResultHit, TOOL_GET, TOOL_LIST, TOOL_PROPOSE,
+    TOOL_SEARCH,
 };
 use chrono::Utc;
 use orchext_audit::{Actor, AuditRecord, AuditWriter, Outcome};
 use orchext_auth::{AuthenticatedToken, TokenService};
 use orchext_index::{Index, ListFilter, SearchQuery};
 use orchext_vault::{DocumentId, VaultDriver, Visibility};
+use rand::RngCore;
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 
@@ -81,6 +84,12 @@ pub struct Server {
     rate: RateLimiter,
     subs: Subscriptions,
     notifier: Option<NotifyTx>,
+    /// Directory where `context_propose` drops proposal JSON files.
+    /// `None` means proposals are disabled on this server (stdio
+    /// hasn't been pointed at a writable spool); the tool returns
+    /// `proposals_disabled` in that case. Conventionally
+    /// `<vault>/.orchext/proposals/`, set by the binary in `main.rs`.
+    proposals_dir: Option<PathBuf>,
 }
 
 impl Server {
@@ -100,6 +109,7 @@ impl Server {
             rate: RateLimiter::default_stdio(),
             subs: Arc::new(Mutex::new(BTreeSet::new())),
             notifier: None,
+            proposals_dir: None,
         }
     }
 
@@ -108,6 +118,15 @@ impl Server {
     /// into the same sink the main loop writes responses to.
     pub fn with_notifier(mut self, tx: NotifyTx) -> Self {
         self.notifier = Some(tx);
+        self
+    }
+
+    /// Enable `context_propose` by pointing it at a directory where
+    /// proposal JSON files should land. Conventionally
+    /// `<vault>/.orchext/proposals/`. Without this set, the tool
+    /// returns `proposals_disabled` regardless of the token's mode.
+    pub fn with_proposals_dir(mut self, dir: PathBuf) -> Self {
+        self.proposals_dir = Some(dir);
         self
     }
 
@@ -207,6 +226,7 @@ impl Server {
             TOOL_SEARCH => self.context_search(args).await?,
             TOOL_GET => self.context_get(args).await?,
             TOOL_LIST => self.context_list(args).await?,
+            TOOL_PROPOSE => self.context_propose(args).await?,
             other => return Err(McpError::MethodNotFound(format!("tool: {other}"))),
         };
 
@@ -386,6 +406,98 @@ impl Server {
             next_cursor: None,
         })
         .map_err(internal)?)
+    }
+
+    // ---------------- context_propose ----------------
+
+    async fn context_propose(&self, args: Value) -> Result<Value> {
+        let input: ProposeInput =
+            serde_json::from_value(args).map_err(|e| McpError::InvalidArgument(e.to_string()))?;
+
+        // Mode gating: tokens issued with `mode: read` cannot propose.
+        if !self.token.mode.allows_propose() {
+            self.audit_denied(TOOL_PROPOSE, Some(input.id.clone())).await;
+            return Err(McpError::ProposalsDisabled);
+        }
+
+        // Spool dir gating: a server that hasn't been wired with a
+        // proposals dir treats the whole feature as off, regardless of
+        // mode. Same `proposals_disabled` code so agents see one shape.
+        let Some(spool) = self.proposals_dir.clone() else {
+            self.audit_denied(TOOL_PROPOSE, Some(input.id.clone())).await;
+            return Err(McpError::ProposalsDisabled);
+        };
+
+        input
+            .patch
+            .validate()
+            .map_err(|e| McpError::InvalidArgument(e.to_string()))?;
+
+        // Resolve the target document. Out-of-scope and missing both
+        // map to NotAuthorized like context_get; the proposal can't
+        // target something the agent can't see.
+        let doc_id = DocumentId::new(input.id.clone()).map_err(|_| {
+            // Same enumeration-resistance rule as context_get.
+            McpError::NotAuthorized
+        })?;
+        let doc = match self.vault.read(&doc_id).await {
+            Ok(d) => d,
+            Err(_) => {
+                self.audit_denied(TOOL_PROPOSE, Some(input.id.clone())).await;
+                return Err(McpError::NotAuthorized);
+            }
+        };
+        if !self.token.scope.allows(&doc.frontmatter.visibility) {
+            self.audit_denied(TOOL_PROPOSE, Some(input.id.clone())).await;
+            return Err(McpError::NotAuthorized);
+        }
+        if doc.frontmatter.visibility.is_private() && !self.token.scope.includes_private() {
+            self.audit_denied(TOOL_PROPOSE, Some(input.id.clone())).await;
+            return Err(McpError::NotAuthorized);
+        }
+
+        // base_version check is best-effort here — the *authoritative*
+        // check happens at approve time inside a transaction in the
+        // server. Surfacing version_conflict at propose time saves the
+        // reviewer a wasted round-trip when the agent is clearly stale.
+        let current = doc.version().map_err(|e| McpError::Server(e.to_string()))?;
+        if current != input.base_version {
+            self.audit_denied(TOOL_PROPOSE, Some(input.id.clone())).await;
+            return Err(McpError::VersionConflict);
+        }
+
+        let proposal_id = generate_proposal_id();
+        let now = Utc::now();
+        let payload = json!({
+            "proposal_id": proposal_id,
+            "doc_id": input.id,
+            "base_version": input.base_version,
+            "patch": input.patch,
+            "reason": input.reason,
+            "actor_token_id": self.token.id,
+            "actor_token_label": self.token.label,
+            "created_at": now.to_rfc3339(),
+            "status": "pending",
+        });
+
+        // Write the spool file. `create_dir_all` is idempotent — the
+        // dir is created on first propose call; the binary creates it
+        // up-front, but tests that bypass main.rs benefit too.
+        tokio::fs::create_dir_all(&spool)
+            .await
+            .map_err(|e| McpError::Server(format!("create proposals dir: {e}")))?;
+        let path = spool.join(format!("{}.json", proposal_id));
+        let bytes = serde_json::to_vec_pretty(&payload).map_err(internal)?;
+        tokio::fs::write(&path, bytes)
+            .await
+            .map_err(|e| McpError::Server(format!("write proposal: {e}")))?;
+
+        self.audit_ok(TOOL_PROPOSE, Some(input.id)).await;
+        let output = ProposeOutput {
+            proposal_id,
+            status: "pending",
+        };
+        serde_json::to_value(output).map_err(internal)
     }
 
     // ---------------- resources ----------------
@@ -645,4 +757,14 @@ fn clamp_limit(requested: Option<u32>, token_max: u32) -> u32 {
 
 fn internal<E: std::fmt::Display>(e: E) -> McpError {
     McpError::Server(e.to_string())
+}
+
+/// `prop-YYYYMMDD-<8 hex>` per the example in `MCP.md` §5.4. The hex
+/// suffix is enough entropy to avoid collisions inside a same-day spool
+/// without forcing a UUID into a user-facing identifier.
+fn generate_proposal_id() -> String {
+    let date = Utc::now().format("%Y%m%d");
+    let mut bytes = [0u8; 4];
+    rand::thread_rng().fill_bytes(&mut bytes);
+    format!("prop-{date}-{}", hex::encode(bytes))
 }

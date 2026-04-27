@@ -180,6 +180,41 @@ export type OAuthAuthorizeResponse = {
   expires_in: number;
 };
 
+// ---------- Proposals ----------
+
+// `frontmatter` is whatever JSON the agent sent — we don't constrain
+// it here so the diff view can render unknown keys verbatim. The same
+// is true of `body_replace` / `body_append`: if both arrived (which
+// the server would have rejected, but defensively), the UI renders
+// `body_replace` and ignores `body_append`.
+export type ProposalPatch = {
+  frontmatter?: Record<string, unknown> | null;
+  body_replace?: string | null;
+  body_append?: string | null;
+};
+
+export type Proposal = {
+  id: string;
+  doc_id: string;
+  base_version: string;
+  patch: ProposalPatch;
+  reason: string | null;
+  status: "pending" | "approved" | "rejected";
+  actor_token_id: string | null;
+  actor_token_label: string;
+  actor_account_id: string | null;
+  decided_by: string | null;
+  decided_at: string | null;
+  decision_note: string | null;
+  applied_version: string | null;
+  created_at: string;
+};
+
+export type ApproveResponse = {
+  proposal: Proposal;
+  applied_version: string;
+};
+
 // ---------- Audit ----------
 
 export type AuditRow = {
@@ -271,6 +306,27 @@ export const api = {
     request<void>(
       "DELETE",
       `/v1/t/${tenantId}/tokens/${encodeURIComponent(tokenId)}`
+    ),
+
+  proposalsList: (
+    tenantId: string,
+    status: "pending" | "approved" | "rejected" | "all" = "pending"
+  ) =>
+    request<{ proposals: Proposal[] }>(
+      "GET",
+      `/v1/t/${tenantId}/proposals?status=${status}`
+    ),
+  proposalApprove: (tenantId: string, proposalId: string, note?: string) =>
+    request<ApproveResponse>(
+      "POST",
+      `/v1/t/${tenantId}/proposals/${encodeURIComponent(proposalId)}/approve`,
+      { note: note ?? null }
+    ),
+  proposalReject: (tenantId: string, proposalId: string, note?: string) =>
+    request<Proposal>(
+      "POST",
+      `/v1/t/${tenantId}/proposals/${encodeURIComponent(proposalId)}/reject`,
+      { note: note ?? null }
     ),
 
   auditList: (tenantId: string, limit = 500, after?: number) => {

@@ -73,6 +73,29 @@ export type TokenIssueInput = {
   ttl_days: number | null;
 };
 
+export type ProposalPatch = {
+  frontmatter?: Record<string, unknown> | null;
+  body_replace?: string | null;
+  body_append?: string | null;
+};
+
+export type Proposal = {
+  id: string;
+  doc_id: string;
+  base_version: string;
+  patch: ProposalPatch;
+  reason: string | null;
+  status: "pending" | "approved" | "rejected";
+  actor_token_id: string | null;
+  actor_token_label: string;
+  actor_account_id: string | null;
+  decided_by: string | null;
+  decided_at: string | null;
+  decision_note: string | null;
+  applied_version: string | null;
+  created_at: string;
+};
+
 export type AuditRow = {
   seq: number;
   ts: string;
@@ -131,6 +154,12 @@ export const api = {
   tokenRevoke: (id: string) => invoke<void>("token_revoke", { id }),
   auditList: (limit?: number) =>
     invoke<AuditPage>("audit_list", { limit: limit ?? null }),
+  proposalList: (status?: "pending" | "approved" | "rejected" | "all") =>
+    invoke<Proposal[]>("proposal_list", { status: status ?? null }),
+  proposalApprove: (id: string, note?: string) =>
+    invoke<Proposal>("proposal_approve", { id, note: note ?? null }),
+  proposalReject: (id: string, note?: string) =>
+    invoke<Proposal>("proposal_reject", { id, note: note ?? null }),
   settingsStatus: () => invoke<SettingsInfo>("settings_status"),
   settingsSetApiKey: (apiKey: string) =>
     invoke<void>("settings_set_api_key", { apiKey }),

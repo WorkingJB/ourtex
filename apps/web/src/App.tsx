@@ -6,11 +6,12 @@ import { TenantPicker } from "./TenantPicker";
 import { DocumentsView } from "./DocumentsView";
 import { TokensView } from "./TokensView";
 import { AuditView } from "./AuditView";
+import { ProposalsView } from "./ProposalsView";
 import { UnlockView } from "./UnlockView";
 import { ConsentView } from "./ConsentView";
 import { Heartbeat, startHeartbeat } from "./heartbeat";
 
-type View = "documents" | "tokens" | "audit";
+type View = "documents" | "proposals" | "tokens" | "audit";
 
 // Top-level auth state. `bootstrapping` is the brief window between
 // app load and the `/v1/auth/me` probe completing — don't render
@@ -195,6 +196,11 @@ function MainApp() {
               onClick={() => setView("documents")}
             />
             <NavBtn
+              label="Proposals"
+              active={view === "proposals"}
+              onClick={() => setView("proposals")}
+            />
+            <NavBtn
               label="Tokens"
               active={view === "tokens"}
               onClick={() => setView("tokens")}
@@ -222,6 +228,9 @@ function MainApp() {
           )}
           {workspace.kind === "ready" && view === "documents" && (
             <DocumentsView tenant={tenant} />
+          )}
+          {workspace.kind === "ready" && view === "proposals" && (
+            <ProposalsView tenant={tenant} />
           )}
           {workspace.kind === "ready" && view === "tokens" && (
             <TokensView tenant={tenant} />

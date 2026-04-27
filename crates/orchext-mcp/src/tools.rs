@@ -13,6 +13,7 @@ use serde_json::{json, Value};
 pub const TOOL_SEARCH: &str = "context_search";
 pub const TOOL_GET: &str = "context_get";
 pub const TOOL_LIST: &str = "context_list";
+pub const TOOL_PROPOSE: &str = "context_propose";
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct SearchInput {
@@ -95,6 +96,37 @@ pub struct ListOutput {
     pub items: Vec<ListResultItem>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next_cursor: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ProposeInput {
+    pub id: String,
+    pub base_version: String,
+    pub patch: Patch,
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+/// `frontmatter` (merge), plus exactly-zero-or-one body op. Validated at
+/// the dispatch site — serde alone cannot express "at most one of these
+/// two fields", and an empty patch is also a runtime error.
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+pub struct Patch {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frontmatter: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body_replace: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body_append: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ProposeOutput {
+    pub proposal_id: String,
+    /// Always `"pending"` at creation time. Mirrors the spec verbatim so
+    /// future status values (e.g. `auto_approved` if we ever add admin-
+    /// signed agents) slot in without a wire change.
+    pub status: &'static str,
 }
 
 /// Schemas for `tools/list`. Deliberately conservative — only fields an
@@ -202,6 +234,76 @@ Follow with context_get for anything you want to read in full.",
                     }
                 }
             }
+        },
+        {
+            "name": TOOL_PROPOSE,
+            "description": "\
+Propose a change to a context document for the user to review. NEVER \
+applies the change directly — the proposal lands in a queue the user \
+approves or rejects. Use when the user has just told you something \
+worth remembering (a new preference, an updated relationship note, a \
+decision they want recorded) and you can identify a specific document \
+that should hold it. Read the current doc with context_get first so \
+you have a fresh `version` to pass as `base_version`. Patch may set \
+`frontmatter` (merged onto current), and at most one of `body_replace` \
+or `body_append`. Always include a brief `reason` explaining why. \
+Returns a `proposal_id` immediately; nothing in the vault changes \
+until the user approves.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "id": {
+                        "type": "string",
+                        "description": "Document id to propose a change against (e.g. \"rel-jane-smith\")."
+                    },
+                    "base_version": {
+                        "type": "string",
+                        "description": "The `version` returned by the most recent context_get for this document. The server rejects with version_conflict if the doc has moved on."
+                    },
+                    "patch": {
+                        "type": "object",
+                        "description": "What to change. At least one of frontmatter / body_replace / body_append; at most one body op.",
+                        "properties": {
+                            "frontmatter": {
+                                "type": "object",
+                                "description": "Object merged onto the current frontmatter on approval. Set tags / links / source / etc. To clear a field, set it to null."
+                            },
+                            "body_replace": {
+                                "type": "string",
+                                "description": "Full replacement of the markdown body."
+                            },
+                            "body_append": {
+                                "type": "string",
+                                "description": "String appended to the current markdown body. Include leading newlines if you want a paragraph break."
+                            }
+                        }
+                    },
+                    "reason": {
+                        "type": "string",
+                        "maxLength": 1000,
+                        "description": "Optional but strongly encouraged. One or two sentences explaining the change so the reviewer can decide."
+                    }
+                },
+                "required": ["id", "base_version", "patch"]
+            }
         }
     ])
+}
+
+impl Patch {
+    /// Validate the "at least one, at most one body op" rule the MCP
+    /// spec calls out (`MCP.md` §5.4). Returns a human-readable reason
+    /// when invalid; callers map to `McpError::InvalidArgument`.
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self.body_replace.is_some() && self.body_append.is_some() {
+            return Err("patch may set at most one of body_replace or body_append");
+        }
+        if self.frontmatter.is_none()
+            && self.body_replace.is_none()
+            && self.body_append.is_none()
+        {
+            return Err("patch must set at least one of frontmatter, body_replace, or body_append");
+        }
+        Ok(())
+    }
 }

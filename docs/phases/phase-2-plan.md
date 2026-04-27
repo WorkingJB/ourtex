@@ -5,11 +5,11 @@ per-sub-milestone plans. Shipped sub-milestones are cross-referenced
 out to their frozen shipped docs; live status lives in
 [`../implementation-status.md`](../implementation-status.md).
 
-**Status snapshot:** Phase 2a, 2b.1, 2b.2, 2b.3, and 2b.4 shipped.
-2b.5 in flight (2026-04-25) — opened with the cookie/CSRF auth
-hardening that 2b.4 deferred. Phase 2c teams was absorbed into
-[Phase 3 platform](phase-3-platform.md) on 2026-04-25 alongside
-the web onboarding chat and OS keychain follow-ups.
+**Status snapshot:** Phase 2a, 2b.1, 2b.2, 2b.3, 2b.4, and 2b.5
+shipped. 2b.5 closed 2026-04-27 with `context.propose` (slice 4).
+Phase 2c teams was absorbed into [Phase 3 platform](phase-3-platform.md)
+on 2026-04-25 alongside the web onboarding chat and OS keychain
+follow-ups; Phase 3a rebrand kicks off next.
 
 ---
 
@@ -231,7 +231,7 @@ concurrency, tokens admin, audit list.
   go through 2b.5's HTTP/SSE MCP. Until then, the web UI just
   doesn't offer a "connect an agent" affordance.
 
-### Phase 2b.5 — Auth hardening + MCP HTTP/SSE (in flight, opened 2026-04-25)
+### Phase 2b.5 — Auth hardening + MCP HTTP/SSE **[SHIPPED 2026-04-27]**
 
 Four slices, in order:
 
@@ -276,9 +276,30 @@ Four slices, in order:
    Desktop, Cursor, etc.) uses stdio so the SSE-driven notification
    surface has no audience today and lands when there's a driver.
    *([Notion](https://www.notion.so/34b47fdae49a80cfaf2deabe4f71c339))*
-4. **`context.propose`** lands on both surfaces. Desktop + web
-   proposal review queue for admins (Phase 3 platform-ready).
-   *([Notion](https://www.notion.so/34b47fdae49a8090a361ca985f9ebd6c))*
+4. **`context.propose`** — **shipped 2026-04-27** in one slice across
+   four surfaces. *([Notion](https://www.notion.so/34b47fdae49a8090a361ca985f9ebd6c))*
+   - **Server schema + MCP tool** — migration `0006_proposals.sql`
+     adds the `proposals` table; `context_propose` available on both
+     stdio (`crates/orchext-mcp`) and HTTP (`crates/orchext-server`).
+     Mode-gated on `read_propose`; `proposals_disabled` for read-only
+     tokens. Best-effort `version_conflict` at propose time;
+     authoritative re-check inside the approve transaction.
+   - **Server review endpoints** — admin-gated under
+     `/v1/t/:tid/proposals*`. Approve applies the patch under
+     base-version optimistic concurrency, re-encrypts under the live
+     session key when the row was encrypted, bumps `documents.version`,
+     and audit-logs `proposal.approve` / `proposal.reject`. Patch
+     model: shallow frontmatter merge (`null` clears) + exactly-zero-
+     or-one body op (`body_replace` / `body_append`).
+   - **Web review UI** — `/proposals` pane in `apps/web` with status
+     filter tabs, frontmatter + body diff preview, approve / reject
+     buttons that surface `version_conflict` inline.
+   - **Desktop review UI** — same pane in `apps/desktop`. Unified DTO
+     across local + remote backends so the React side renders
+     identically. Local workspaces back the queue by reading the
+     `.orchext/proposals/<id>.json` files dropped by stdio
+     `orchext-mcp`; remote workspaces hit the new server endpoints
+     via a new `crates/orchext-sync::proposals` module.
 
 **Unblocks after full 2b:** use case 2 end-to-end. Also a power-user
 flavor of use case 1 (own server, own devices).

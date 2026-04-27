@@ -188,8 +188,14 @@ async fn run_serve(token_secret: String, vault_root: PathBuf) -> std::result::Re
         .map_err(|e| format!("reindex: {e}"))?;
 
     let (note_tx, note_rx) = tokio::sync::mpsc::unbounded_channel::<Notification>();
+    let proposals_dir = orchext_dir.join("proposals");
+    tokio::fs::create_dir_all(&proposals_dir)
+        .await
+        .map_err(|e| format!("create proposals dir: {e}"))?;
     let server = Arc::new(
-        Server::new(vault.clone(), index.clone(), auth, audit, token).with_notifier(note_tx),
+        Server::new(vault.clone(), index.clone(), auth, audit, token)
+            .with_notifier(note_tx)
+            .with_proposals_dir(proposals_dir),
     );
 
     // Watcher holds notify's RecommendedWatcher alive via WatcherHandle.
