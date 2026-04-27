@@ -21,12 +21,12 @@ that limit, consolidate scope or break out a sub-phase.
 desktop frontends. wasm-pack 0.14 drives the browser crypto build.
 Workspace at repo root.
 
-**Test totals:** 213/213 passing with `DATABASE_URL` set; 158/158
+**Test totals:** 214/214 passing with `DATABASE_URL` set; 158/158
 without the DB-required suite (Rust only — `apps/web` has no JS test
-suite yet). +52 across the OAuth + MCP HTTP rounds, then +4 in the
-deployment-hardening pass (1 `/readyz` happy-path, 3 CORS layer
-tests covering the empty-origin no-mount default, allowed-origin
-echo, and disallowed-origin block).
+suite yet). +52 across the OAuth + MCP HTTP rounds, +4 in the
+initial deployment-hardening pass (1 `/readyz` happy-path, 3 CORS
+layer tests), +1 in the post-launch hardening pass (auth rate-limit
+XFF regression — pins the signup/login fix below).
 
 **Scope shuffle 2026-04-25:** four scope changes folded in one pass.
 (1) **Graph view dropped.** Desktop's `GraphView.tsx` +
@@ -65,12 +65,38 @@ task aggregation + agent orchestration. Plan detail in
 | `orchext-index`  | ✅ shipped     | 4    | 6           | SQLite + FTS5; search / graph / filter |
 | `orchext-mcp`    | ✅ shipped     | 11   | 22          | JSON-RPC + stdio; rate limit + fs watcher |
 | `orchext-desktop`| ✅ 2a + 2b.2 + 2b.3 | 7 | —           | Multi-vault + remote connect + unlock/lock |
-| `orchext-server` | ✅ 2b.3 + 2b.5 | 41 | 43          | Auth + vault + index + tokens + audit + crypto + OAuth + MCP HTTP + readiness + CORS |
+| `orchext-server` | ✅ 2b.3 + 2b.5 | 41 | 44          | Auth + vault + index + tokens + audit + crypto + OAuth + MCP HTTP + readiness + CORS |
 | `orchext-sync`   | ✅ 2b.2 + 2b.3 | 0   | —           | `RemoteVaultDriver` + crypto control calls |
 | `orchext-oauth-client` | ✅ 2b.5 | 9 | —           | PKCE agent helper + `orchext-oauth` CLI    |
 | `orchext-crypto` | ✅ 2b.3 + wasm32 | 13 | —           | Argon2id KDF + XChaCha20-Poly1305 AEAD; browser build clean |
 | `orchext-crypto-wasm` | ✅ 2b.4 | —  | —               | wasm-bindgen surface; 4 ops: generateSalt/ContentKey, wrap/unwrap |
 | `orchext-web`    | ✅ 2b.4 + 2b.5 | — | —            | Login + tenant picker + unlock + doc CRUD + tokens + audit + OAuth consent |
+
+**Production hardening 2026-04-26 (post first deploy to
+`app.orchext.ai` + `test-app.orchext.ai`):** three fixes landed after
+runtime probes against the live deployment. (1) **Auth rate-limiter
+500.** `POST /v1/auth/{signup,login}` (and `/native/*` twins) returned
+500 "Unable To Extract Key" — `tower_governor`'s default
+`PeerIpKeyExtractor` reads peer IP from axum's `ConnectInfo` extension,
+which the binary wasn't attaching, and behind Fly the peer is the
+proxy anyway. Fix: `SmartIpKeyExtractor` (XFF first, ConnectInfo
+fallback) + `into_make_service_with_connect_info::<SocketAddr>` in
+`main.rs`. New regression test pins the XFF path with
+`rate_limit_auth: true`. (2) **SPA security headers.** Added CSP
+(`default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; …;
+frame-ancestors 'none'; upgrade-insecure-requests`),
+`X-Content-Type-Options: nosniff`, `Referrer-Policy:
+strict-origin-when-cross-origin`, `Permissions-Policy` lockdown, and
+HSTS upgraded to `max-age=63072000; includeSubDomains; preload` —
+all via `apps/web/vercel.json` headers. (3) **CI workflows green for
+the first time.** `server.yml` was failing on every push because
+`cargo clippy --workspace` pulled the Tauri desktop crate, which
+needs GTK system libs absent on `ubuntu-latest` (exit 101); excluded
+the desktop crate from server CI. `web.yml` was failing on a
+"committed wasm matches sources" diff — wasm-pack output isn't
+byte-identical across host platforms, so the check was unfixable;
+removed it (Vercel's no-Rust prebuild path remains the actual gate
+for stale wasm).
 
 **In flight:** Phase 2b.5 — auth hardening + agent surface. Web auth
 hardening **closed 2026-04-25** *([Notion](https://www.notion.so/34d47fdae49a81d4add7cfd2b7151ca8))*:

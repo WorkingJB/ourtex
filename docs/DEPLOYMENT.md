@@ -341,6 +341,14 @@ the checklist exists so nothing is forgotten.
 - [x] **Request IDs in tracing** — `TraceLayer` in `main.rs`
       generates a fresh UUID per request and inserts it into the
       request span; every `tracing::*!` inside a handler inherits it.
+- [x] **Auth rate-limit IP key extractor** — `SmartIpKeyExtractor`
+      (XFF first, `ConnectInfo` fallback) wired in `auth.rs`, paired
+      with `into_make_service_with_connect_info::<SocketAddr>` in
+      `main.rs`. Caught after first prod deploy: signup/login 500'd
+      with "Unable To Extract Key" because the default extractor
+      needed `ConnectInfo` the binary wasn't attaching, and behind
+      Fly the peer is the proxy anyway. Regression test
+      `signup_succeeds_with_rate_limiter_enabled_and_xff` pins it.
 
 ### 8.2 Dockerfile (`crates/orchext-server/Dockerfile`)
 
@@ -374,16 +382,34 @@ the checklist exists so nothing is forgotten.
       file route correctly for both prod and test projects.
 - [x] `deploy/README.md` linking back to this document and listing
       first-time bring-up steps.
+- [x] **`apps/web/vercel.json` security headers** — CSP
+      (`default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; …;
+      frame-ancestors 'none'; upgrade-insecure-requests`),
+      `X-Content-Type-Options: nosniff`, `Referrer-Policy:
+      strict-origin-when-cross-origin`, `Permissions-Policy`
+      lockdown, and HSTS upgraded to `max-age=63072000;
+      includeSubDomains; preload`. `'wasm-unsafe-eval'` is what
+      keeps the orchext-crypto-wasm module compile working;
+      `frame-ancestors 'none'` replaces the legacy `X-Frame-Options:
+      DENY`.
 
 ### 8.5 CI (`.github/workflows/`)
 
 - [x] **`server.yml`** — clippy + test against a Postgres 17
-      service container. `cargo fmt --check` *not* gated yet;
-      workspace has ~140 files of pre-existing rustfmt drift that
-      needs a one-shot cleanup before fmt becomes a useful gate.
+      service container. `--exclude orchext-desktop` because the
+      Tauri crate pulls `gdk-sys` which needs `libgtk-3-dev` /
+      `libwebkit2gtk-4.1-dev` (absent on `ubuntu-latest`);
+      desktop has its own Phase 4 build pipeline. `cargo fmt
+      --check` *not* gated yet — workspace has ~140 files of
+      pre-existing rustfmt drift.
 - [x] **`web.yml`** — `npm ci` + `npm run build` (which invokes
       `wasm-pack` via `prebuild`). Path-filtered so it only runs
-      when `apps/web/` or the crypto crates change.
+      when `apps/web/` or the crypto crates change. The
+      "verify committed wasm matches sources" step was removed
+      after wasm-pack proved non-deterministic across host
+      platforms (macOS-built bytes ≠ Linux-built bytes); Vercel's
+      no-Rust prebuild path remains the actual gate against stale
+      committed wasm.
 - [ ] **Vercel auto-deploys** — production from `main`, test from
       `develop`. Configured in Vercel UI; no GH Actions needed.
       *(Done at first-deploy time; not a code-side artifact.)*
@@ -539,6 +565,8 @@ without code change beyond config.
 | 2026-04-26 | Skip HA Postgres at launch | Single-node + 7-day PITR is enough until paid users or revenue depends on uptime (§9). |
 | 2026-04-26 | API hostname not yet published | No third-party MCP clients yet; deferring `api.orchext.ai` keeps the cookie story simpler (§13). |
 | 2026-04-26 | Region pinned to us-west (`sjc` + `aws-us-west-2`) instead of us-east | Neon project was created in `us-west-2` first; co-locating Fly avoids cross-coast latency. Reversible by changing `primary_region` in both `fly.toml`s and re-creating Neon projects. |
+| 2026-04-26 | `SmartIpKeyExtractor` (XFF) for the auth rate limiter, not `PeerIpKeyExtractor` | Behind Fly the TCP peer is the proxy — `PeerIpKeyExtractor` would either 500 (no `ConnectInfo`) or rate-limit every request against a single proxy IP, which collectively locks out the world. XFF is set by Fly on every inbound; `ConnectInfo` is wired as fallback for self-host (§8.1). |
+| 2026-04-26 | Drop the "verify committed wasm" CI step rather than fix it | wasm-pack output is not byte-identical across host platforms, so the committed (macOS-built) artefact will never match a CI (Linux) rebuild. Vercel's no-Rust prebuild path is the actual gate against stale wasm shipping (§8.5). |
 
 Update this log whenever a vendor, topology, or config decision
 changes. Each row is the smallest-possible "why" — if the decision
