@@ -429,17 +429,24 @@ function DocEditor({
     [initial?.body]
   );
   const [id, setId] = useState(initial?.id ?? "");
+  // For new docs without an active type filter, we don't pre-pick a
+  // type — the select shows a "Please select…" placeholder until the
+  // user chooses. Saves are gated on a non-empty type.
   const [type, setType] = useState(
-    initial?.type ?? defaultType ?? "relationships"
+    initial?.type ?? defaultType ?? ""
   );
   const [visibility, setVisibility] = useState(
     initial?.visibility ?? defaultVisibility ?? "private"
   );
   const [tags, setTags] = useState((initial?.tags ?? []).join(", "));
-  const [sourceField, setSourceField] = useState(initial?.source ?? "");
   const [title, setTitle] = useState(isNew ? "" : split.title);
   const [body, setBody] = useState(isNew ? "" : split.body);
   const [busy, setBusy] = useState(false);
+  // Track whether the user has hand-edited the ID. We auto-derive the
+  // id from the title for new docs until that happens — once the user
+  // touches the id field, we stop syncing so we don't clobber their
+  // intentional value.
+  const [idTouched, setIdTouched] = useState(!isNew);
   const [err, setErr] = useState<string | null>(null);
   const [savedAt, setSavedAt] = useState<number | null>(null);
 
@@ -460,6 +467,14 @@ function DocEditor({
     return Array.from(set).sort();
   }, [type]);
 
+  // Auto-derive the doc id from the title for new docs until the
+  // user manually edits the id field. Slugifies + clamps to the
+  // 64-char limit `orchext_vault::DocumentId` enforces.
+  useEffect(() => {
+    if (!isNew || idTouched) return;
+    setId(slugify(title));
+  }, [title, isNew, idTouched]);
+
   useEffect(() => {
     if (savedAt === null) return;
     const t = setTimeout(() => setSavedAt(null), 1800);
@@ -472,7 +487,6 @@ function DocEditor({
     try {
       const trimmedId = id.trim();
       const trimmedType = type.trim();
-      const provenance = sourceField.trim() || null;
       const tagList = tags
         .split(",")
         .map((t) => t.trim())
@@ -486,7 +500,10 @@ function DocEditor({
         tags: tagList,
         links: initial?.links ?? [],
         aliases: initial?.aliases ?? [],
-        source: provenance,
+        // Preserve any existing provenance value on edit (the field
+        // is no longer surfaced in the form, but we don't want to
+        // silently strip it from docs that already have one).
+        source: initial?.source ?? null,
         body: combinedBody,
       });
 
@@ -504,7 +521,7 @@ function DocEditor({
         tags: tagList,
         links: initial?.links ?? [],
         aliases: initial?.aliases ?? [],
-        source: provenance,
+        source: initial?.source ?? null,
         created: initial?.created ?? null,
         updated: initial?.updated ?? null,
         body: combinedBody,
@@ -594,9 +611,12 @@ function DocEditor({
         <Field label="ID">
           <input
             value={id}
-            onChange={(e) => setId(e.target.value)}
+            onChange={(e) => {
+              setIdTouched(true);
+              setId(e.target.value);
+            }}
             disabled={!isNew}
-            placeholder="e.g. rel-jane-smith"
+            placeholder="auto-derived from title"
             className="w-full px-3 py-1.5 border border-neutral-300 rounded text-sm font-mono disabled:bg-neutral-100"
           />
         </Field>
@@ -606,6 +626,11 @@ function DocEditor({
             onChange={(e) => setType(e.target.value)}
             className="w-full px-3 py-1.5 border border-neutral-300 rounded text-sm bg-white"
           >
+            {!type && (
+              <option value="" disabled>
+                Please select…
+              </option>
+            )}
             {typeOptions.map((t) => (
               <option key={t} value={t}>
                 {t}
@@ -629,15 +654,7 @@ function DocEditor({
             {audienceCopy(visibility, isOrg, tenantName)}
           </p>
         </Field>
-        <Field label="Source (provenance)">
-          <input
-            value={sourceField}
-            onChange={(e) => setSourceField(e.target.value)}
-            placeholder="optional — e.g. onboarding-2026-04"
-            className="w-full px-3 py-1.5 border border-neutral-300 rounded text-sm"
-          />
-        </Field>
-        <Field label="Tags (comma-separated)" full>
+        <Field label="Tags (comma-separated)">
           <input
             value={tags}
             onChange={(e) => setTags(e.target.value)}
@@ -657,13 +674,6 @@ function DocEditor({
         />
       </Field>
 
-      {!isNew && initial && (
-        <div className="mt-4 pt-4 border-t border-neutral-200 text-xs text-neutral-500 font-mono">
-          {initial.version}
-          {initial.updated_at && ` · updated ${initial.updated_at}`}
-        </div>
-      )}
-
       {err && (
         <div className="mt-4 p-3 bg-red-50 text-red-700 text-sm rounded-lg border border-red-200">
           {err}
@@ -671,6 +681,25 @@ function DocEditor({
       )}
     </div>
   );
+}
+
+/// Build a vault doc id from a free-text title. Lowercase ASCII +
+/// digits + dashes (matches `orchext_vault::DocumentId::is_valid`).
+/// Trims to 64 chars and drops any leading dashes that fall out
+/// after non-ASCII characters get squashed.
+function slugify(title: string): string {
+  const lowered = title.toLowerCase();
+  let out = "";
+  for (const ch of lowered) {
+    if ((ch >= "a" && ch <= "z") || (ch >= "0" && ch <= "9")) {
+      out += ch;
+    } else if (out.length > 0 && !out.endsWith("-")) {
+      out += "-";
+    }
+  }
+  out = out.replace(/-+$/, "");
+  if (out.length > 64) out = out.slice(0, 64).replace(/-+$/, "");
+  return out;
 }
 
 /// Split a stored markdown body into a leading H1 (the doc's title)
