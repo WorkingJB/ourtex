@@ -128,9 +128,20 @@ pub struct ConnectRemoteInput {
     pub tenant_id: Option<uuid::Uuid>,
 }
 
-/// Log into a remote `orchext-server`, pick a tenant, register the
-/// workspace, and activate it. Persists the returned session token in
-/// the local registry so subsequent activations don't prompt.
+/// Log into a remote `orchext-server`, register **every** tenant the
+/// account belongs to (personal vault + each org membership), and
+/// activate one. Persists the returned session token in the local
+/// registry so subsequent activations don't prompt.
+///
+/// Phase 3 platform Slice 1 changed this from "register the personal
+/// tenant only" to "register all memberships" so the WorkspaceSwitcher
+/// surfaces orgs alongside personal — the desktop's equivalent of the
+/// web client's left rail.
+///
+/// Activation order: explicit `tenant_id` if passed; else the personal
+/// tenant; else the first tenant. Surfaces "awaiting approval" if the
+/// account has zero memberships (D17d — pending row exists, but no
+/// admin has approved yet).
 #[tauri::command]
 pub async fn workspace_connect_remote(
     state: State<'_, AppState>,
@@ -154,72 +165,96 @@ pub async fn workspace_connect_remote(
     .await
     .map_err(|e| format!("login: {e}"))?;
 
-    // 2. list memberships and pick a tenant
+    // 2. list memberships
     let tenants = list_tenants(&server_url, &outcome.session.secret)
         .await
         .map_err(|e| format!("list tenants: {e}"))?;
-    let chosen = match input.tenant_id {
-        Some(id) => tenants
-            .into_iter()
-            .find(|t| t.tenant_id == id)
-            .ok_or_else(|| "selected tenant not found in memberships".to_string())?,
+    if tenants.is_empty() {
+        return Err(format!(
+            "Awaiting approval — your sign-up to {} is pending review by an admin. \
+             Use the web app to check status, or contact your admin.",
+            server_url.host_str().unwrap_or("the server")
+        ));
+    }
+
+    // 3. decide which tenant to activate. Explicit `tenant_id` first;
+    //    else personal; else the first one returned.
+    let activate_target_id = match input.tenant_id {
+        Some(id) => {
+            if !tenants.iter().any(|t| t.tenant_id == id) {
+                return Err("selected tenant not found in memberships".into());
+            }
+            id
+        }
         None => tenants
-            .into_iter()
+            .iter()
             .find(|t| t.kind == "personal")
-            .ok_or_else(|| {
-                format!(
-                    "no personal tenant for account on {}; pass tenant_id explicitly",
-                    server_url.host_str().unwrap_or("server")
-                )
-            })?,
+            .or_else(|| tenants.first())
+            .map(|t| t.tenant_id)
+            .expect("tenants is non-empty"),
     };
 
-    // 3. pick cache root + register. Cache root is
-    //    `<home>/.orchext/remote/<workspace_id>/` — chosen below after
-    //    `add_remote` generates the id.
-    let name = input.name.unwrap_or_else(|| {
-        format!(
-            "{}@{}",
-            chosen.name,
-            server_url.host_str().unwrap_or("server")
-        )
-    });
-
+    // 4. shared cache root + register every tenant. Each entry gets
+    //    its own subdirectory under `<home>/.orchext/remote/<id>/`;
+    //    `add_remote`'s dedupe-on-(url, tenant_id) keeps re-runs of
+    //    this command idempotent.
+    let host = server_url.host_str().unwrap_or("server").to_string();
     let home = dirs_home();
     let remote_base = home.join(".orchext").join("remote");
     tokio::fs::create_dir_all(&remote_base)
         .await
         .map_err(|e| format!("create remote cache root: {e}"))?;
 
-    let id = state
-        .mutate_registry(|reg| {
-            // Use a placeholder cache path; we know the workspace_id only
-            // after registration, so we update the path in a second pass
-            // below. For `add_remote`'s dedupe-on-(url, tenant_id) check,
-            // the placeholder path is irrelevant.
-            let entry = reg.add_remote(
-                name.clone(),
-                remote_base.clone(),
-                server_url.to_string(),
-                chosen.tenant_id,
-                outcome.account.email.clone(),
-                outcome.session.secret.clone(),
-                outcome.session.expires_at,
-            );
-            let id = entry.id.clone();
-            Ok(id)
-        })
-        .await?;
+    let mut activate_workspace_id: Option<String> = None;
+    for tenant in &tenants {
+        // The caller-supplied `name` only applies to the personal
+        // tenant (the historical default); all other tenants get a
+        // host-qualified default so the dropdown stays readable.
+        let name = if tenant.kind == "personal" {
+            input
+                .name
+                .clone()
+                .unwrap_or_else(|| format!("{}@{}", tenant.name, host))
+        } else {
+            format!("{}@{}", tenant.name, host)
+        };
 
-    // Rewrite the cache path to `~/.orchext/remote/<id>/`. Persist.
+        let tenant_id = tenant.tenant_id;
+        let id = state
+            .mutate_registry(|reg| {
+                let entry = reg.add_remote(
+                    name.clone(),
+                    remote_base.clone(),
+                    server_url.to_string(),
+                    tenant_id,
+                    outcome.account.email.clone(),
+                    outcome.session.secret.clone(),
+                    outcome.session.expires_at,
+                );
+                Ok(entry.id.clone())
+            })
+            .await?;
+
+        // Rewrite the cache path to `~/.orchext/remote/<id>/`. Persist.
+        let id_for_path = id.clone();
+        state
+            .mutate_registry(|reg| {
+                if let Some(w) = reg.workspaces.iter_mut().find(|w| w.id == id_for_path) {
+                    w.path = remote_base.join(&id_for_path);
+                }
+                Ok(())
+            })
+            .await?;
+
+        if tenant_id == activate_target_id {
+            activate_workspace_id = Some(id);
+        }
+    }
+
+    let id = activate_workspace_id
+        .ok_or_else(|| "could not resolve activation target after registration".to_string())?;
     state
-        .mutate_registry(|reg| {
-            if let Some(w) = reg.workspaces.iter_mut().find(|w| w.id == id) {
-                w.path = remote_base.join(&id);
-            }
-            reg.set_active(&id)?;
-            Ok(())
-        })
+        .mutate_registry(|reg| reg.set_active(&id))
         .await?;
 
     activate_inner(&state, &app, &id).await
