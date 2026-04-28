@@ -9,6 +9,18 @@ import { Markdown } from "tiptap-markdown";
 /// flipping the Advanced toggle exposes the raw markdown so power
 /// users can edit MD directly. Both modes round-trip through the
 /// same `value` prop, which is plain markdown.
+///
+/// Set `localStorage.setItem("debug:rte", "1")` and reload to log
+/// transactions + selections to the console — used to track down
+/// "double-click selects a word and the word becomes bold."
+function debugEditor(): boolean {
+  try {
+    return typeof localStorage !== "undefined"
+      && localStorage.getItem("debug:rte") === "1";
+  } catch {
+    return false;
+  }
+}
 export function RichTextEditor({
   value,
   onChange,
@@ -49,6 +61,26 @@ export function RichTextEditor({
     onUpdate: ({ editor }) => {
       const md = (editor.storage as any).markdown?.getMarkdown?.() ?? "";
       onChange(md);
+      if (debugEditor()) {
+        // eslint-disable-next-line no-console
+        console.log("[RTE] update", {
+          html: editor.getHTML(),
+          markdown: md,
+        });
+      }
+    },
+    onSelectionUpdate: ({ editor }) => {
+      if (!debugEditor()) return;
+      // eslint-disable-next-line no-console
+      console.log("[RTE] selection", {
+        from: editor.state.selection.from,
+        to: editor.state.selection.to,
+        boldActive: editor.isActive("bold"),
+        italicActive: editor.isActive("italic"),
+        // What the editor would emit *now* — compare to before/after
+        // double-click to see if the doc itself changed.
+        markdown: (editor.storage as any).markdown?.getMarkdown?.() ?? "",
+      });
     },
     editorProps: {
       attributes: {
