@@ -327,6 +327,7 @@ function ToolbarBtn({
 }) {
   return (
     <button
+      type="button"
       onClick={onClick}
       title={title}
       disabled={disabled}
