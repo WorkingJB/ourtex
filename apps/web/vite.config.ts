@@ -9,13 +9,6 @@ const serverUrl = process.env.ORCHEXT_SERVER_URL ?? "http://localhost:8080";
 export default defineConfig({
   plugins: [react()],
   clearScreen: false,
-  // Enable sourcemaps in production builds so the test deploy's
-  // stack traces are decodable from the browser console while we
-  // chase the double-click bold bug. Bundle size impact is small
-  // and the maps only download when devtools is open.
-  build: {
-    sourcemap: true,
-  },
   server: {
     port: 1430,
     strictPort: true,

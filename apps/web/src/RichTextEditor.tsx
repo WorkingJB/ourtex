@@ -1,4 +1,4 @@
-import { MouseEvent as ReactMouseEvent, useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useEditor, EditorContent, Editor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import Link from "@tiptap/extension-link";
@@ -9,18 +9,6 @@ import { Markdown } from "tiptap-markdown";
 /// flipping the Advanced toggle exposes the raw markdown so power
 /// users can edit MD directly. Both modes round-trip through the
 /// same `value` prop, which is plain markdown.
-///
-/// Set `localStorage.setItem("debug:rte", "1")` and reload to log
-/// transactions + selections to the console — used to track down
-/// "double-click selects a word and the word becomes bold."
-function debugEditor(): boolean {
-  try {
-    return typeof localStorage !== "undefined"
-      && localStorage.getItem("debug:rte") === "1";
-  } catch {
-    return false;
-  }
-}
 export function RichTextEditor({
   value,
   onChange,
@@ -61,80 +49,6 @@ export function RichTextEditor({
     onUpdate: ({ editor }) => {
       const md = (editor.storage as any).markdown?.getMarkdown?.() ?? "";
       onChange(md);
-      if (debugEditor()) {
-        // eslint-disable-next-line no-console
-        console.log("[RTE] update", {
-          html: editor.getHTML(),
-          markdown: md,
-        });
-      }
-    },
-    onSelectionUpdate: ({ editor }) => {
-      if (!debugEditor()) return;
-      // eslint-disable-next-line no-console
-      console.log("[RTE] selection", {
-        from: editor.state.selection.from,
-        to: editor.state.selection.to,
-        boldActive: editor.isActive("bold"),
-        italicActive: editor.isActive("italic"),
-        markdown: (editor.storage as any).markdown?.getMarkdown?.() ?? "",
-      });
-    },
-    onTransaction: ({ transaction }) => {
-      if (!debugEditor()) return;
-      // Skip noisy selection-only transactions; we only care about the
-      // ones that mutate the doc (those are the bold-bug suspects).
-      if (!transaction.docChanged) return;
-      const steps = transaction.steps.map((s: any) => ({
-        type: s.constructor?.name,
-        json: typeof s.toJSON === "function" ? s.toJSON() : null,
-      }));
-      // Stringify the steps inline (Chrome lazy-renders object refs).
-      const metaRaw = (transaction as any).meta ?? {};
-      // Meta keys are plugin keys (objects) that Object.keys can't see;
-      // also enumerate Reflect.ownKeys to catch them, then stringify
-      // each value defensively.
-      const metaSummary: Record<string, string> = {};
-      try {
-        const keys = [
-          ...Object.keys(metaRaw),
-          ...Reflect.ownKeys(metaRaw)
-            .map((k) => String(k))
-            .filter((k) => !(k in metaRaw)),
-        ];
-        for (const k of keys) {
-          const val: unknown = (metaRaw as any)[k];
-          try {
-            metaSummary[k] = JSON.stringify(val) ?? String(val);
-          } catch {
-            metaSummary[k] =
-              val && typeof val === "object"
-                ? `<${(val as any).constructor?.name ?? "object"}>`
-                : String(val);
-          }
-        }
-      } catch (e) {
-        metaSummary.__error = String(e);
-      }
-      // Log a single grouped block per mutating tx so the full stack
-      // (which Chrome truncates inside object args) prints as a
-      // standalone string, then expand the object data.
-      const stack = new Error("rte-tx-stack").stack ?? "";
-      // eslint-disable-next-line no-console
-      console.groupCollapsed("[RTE] tx-mutating");
-      // eslint-disable-next-line no-console
-      console.log("steps:", JSON.stringify(steps));
-      // eslint-disable-next-line no-console
-      console.log("meta:", JSON.stringify(metaSummary));
-      // eslint-disable-next-line no-console
-      console.log("stack:");
-      // eslint-disable-next-line no-console
-      console.log(stack);
-      // eslint-disable-next-line no-console
-      console.groupEnd();
-      // Stash the most recent mutating tx on window so the user can
-      // poke at it from devtools (`__rte_lastTx.stack` etc).
-      (window as any).__rte_lastTx = { steps, meta: metaSummary, stack };
     },
     editorProps: {
       attributes: {
@@ -161,85 +75,6 @@ export function RichTextEditor({
       editor.commands.setContent(value, { emitUpdate: false } as any);
     }
   }, [editor, value]);
-
-  // Debug-only global event capture. Logs every click anywhere in the
-  // document with its target, detail (click count), and isTrusted, so
-  // we can see if the click that ends up at the bold button has been
-  // dispatched programmatically (detail=0) or is a real mouse click.
-  useEffect(() => {
-    if (!debugEditor()) return;
-    // Monkey-patch HTMLElement.prototype.click and dispatchEvent so we
-    // can see who's invoking a synthetic click on the bold button.
-    const origClick = HTMLElement.prototype.click;
-    HTMLElement.prototype.click = function patchedClick(this: HTMLElement) {
-      // eslint-disable-next-line no-console
-      console.log("[RTE] HTMLElement.click() called on", {
-        tag: this.tagName,
-        text: this.textContent?.slice(0, 30),
-        stack: new Error("click-stack").stack,
-      });
-      return origClick.call(this);
-    };
-    const origDispatch = EventTarget.prototype.dispatchEvent;
-    EventTarget.prototype.dispatchEvent = function patchedDispatch(
-      this: EventTarget,
-      ev: Event
-    ) {
-      if (ev.type === "click" || ev.type === "dblclick") {
-        const t = this as HTMLElement;
-        // eslint-disable-next-line no-console
-        console.log("[RTE] dispatchEvent", {
-          eventType: ev.type,
-          targetTag: t.tagName,
-          targetText: t.textContent?.slice(0, 30),
-          isTrusted: ev.isTrusted,
-          stack: new Error("dispatch-stack").stack,
-        });
-      }
-      return origDispatch.call(this, ev);
-    };
-    const onClick = (e: MouseEvent) => {
-      const t = e.target as HTMLElement | null;
-      // eslint-disable-next-line no-console
-      console.log("[RTE] global-click", {
-        phase: "capture",
-        type: e.type,
-        detail: e.detail,
-        isTrusted: e.isTrusted,
-        button: e.button,
-        clientX: e.clientX,
-        clientY: e.clientY,
-        targetTag: t?.tagName,
-        targetText: t?.textContent?.slice(0, 30),
-        active: document.activeElement?.tagName,
-      });
-    };
-    const onKey = (e: KeyboardEvent) => {
-      // eslint-disable-next-line no-console
-      console.log("[RTE] global-key", {
-        type: e.type,
-        key: e.key,
-        code: e.code,
-        meta: e.metaKey,
-        ctrl: e.ctrlKey,
-        alt: e.altKey,
-        shift: e.shiftKey,
-        active: document.activeElement?.tagName,
-      });
-    };
-    document.addEventListener("click", onClick, true);
-    document.addEventListener("dblclick", onClick, true);
-    document.addEventListener("mousedown", onClick, true);
-    document.addEventListener("keydown", onKey, true);
-    return () => {
-      document.removeEventListener("click", onClick, true);
-      document.removeEventListener("dblclick", onClick, true);
-      document.removeEventListener("mousedown", onClick, true);
-      document.removeEventListener("keydown", onKey, true);
-      HTMLElement.prototype.click = origClick;
-      EventTarget.prototype.dispatchEvent = origDispatch;
-    };
-  }, []);
 
   return (
     <div className="border border-neutral-300 rounded">
@@ -283,26 +118,7 @@ function Toolbar({
         title="Bold (⌘B)"
         active={editor?.isActive("bold") ?? false}
         disabled={advanced || !editor}
-        onClick={(e) => {
-          if (debugEditor()) {
-            const target = e?.target as HTMLElement | null;
-            const current = e?.currentTarget as HTMLElement | null;
-            // eslint-disable-next-line no-console
-            console.log("[RTE] TOOLBAR-BOLD onClick", {
-              isTrusted: e?.isTrusted,
-              type: e?.type,
-              detail: e?.detail,
-              clientX: e?.clientX,
-              clientY: e?.clientY,
-              targetTag: target?.tagName,
-              targetClass: target?.className,
-              targetText: target?.textContent?.slice(0, 30),
-              currentTag: current?.tagName,
-              currentClass: current?.className,
-            });
-          }
-          can((c) => c.toggleBold().run());
-        }}
+        onClick={() => can((c) => c.toggleBold().run())}
         className="font-bold"
       />
       <ToolbarBtn
@@ -379,6 +195,7 @@ function Toolbar({
       />
       <div className="ml-auto">
         <button
+          type="button"
           onClick={onToggleAdvanced}
           title="Advanced — show raw markdown"
           className={
@@ -411,23 +228,23 @@ function ToolbarBtn({
   title: string;
   active: boolean;
   disabled?: boolean;
-  onClick: (e: ReactMouseEvent<HTMLButtonElement>) => void;
+  onClick: () => void;
   className?: string;
 }) {
   return (
     <button
       type="button"
-      // Guard against synthetic detail:0 clicks. Something in the
-      // editor click pipeline is firing the bold button on every
-      // contenteditable click — verified via instrumentation — but
-      // never with a real `detail` (click count). Real mouse clicks
-      // always have detail >= 1; keyboard activation has detail 0
-      // *but* we don't bind keyboard shortcuts on these buttons (the
-      // editor's keymap handles ⌘B etc. directly), so dropping
-      // detail-0 clicks is safe.
+      // Drop synthetic `detail: 0` clicks — something in the editor's
+      // click pipeline (browser-internal; bypasses JS dispatchEvent and
+      // HTMLElement.click) fires a click on each toolbar button after
+      // every contenteditable click, causing double-click-to-select to
+      // also wrap the word in <strong>. Real mouse clicks always have
+      // `detail >= 1`. The toolbar buttons aren't keyboard-bound (the
+      // editor's keymap handles ⌘B/⌘I directly), so dropping
+      // detail-zero clicks here is safe.
       onClick={(e) => {
         if (e.detail === 0) return;
-        onClick(e);
+        onClick();
       }}
       title={title}
       disabled={disabled}
