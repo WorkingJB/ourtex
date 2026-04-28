@@ -90,21 +90,36 @@ export function RichTextEditor({
         json: typeof s.toJSON === "function" ? s.toJSON() : null,
       }));
       // Stringify the steps inline (Chrome lazy-renders object refs).
-      // Meta keys are plugin instances; coerce to strings so they
-      // serialize cleanly without circular-ref errors.
       const metaRaw = (transaction as any).meta ?? {};
-      const meta: Record<string, unknown> = {};
-      for (const k in metaRaw) {
-        try {
-          meta[String(k)] = metaRaw[k];
-        } catch {
-          meta[String(k)] = "<unserializable>";
+      // Meta keys are plugin keys (objects) that Object.keys can't see;
+      // also enumerate Reflect.ownKeys to catch them, then stringify
+      // each value defensively.
+      const metaSummary: Record<string, string> = {};
+      try {
+        const keys = [
+          ...Object.keys(metaRaw),
+          ...Reflect.ownKeys(metaRaw)
+            .map((k) => String(k))
+            .filter((k) => !(k in metaRaw)),
+        ];
+        for (const k of keys) {
+          const val: unknown = (metaRaw as any)[k];
+          try {
+            metaSummary[k] = JSON.stringify(val) ?? String(val);
+          } catch {
+            metaSummary[k] =
+              val && typeof val === "object"
+                ? `<${(val as any).constructor?.name ?? "object"}>`
+                : String(val);
+          }
         }
+      } catch (e) {
+        metaSummary.__error = String(e);
       }
       // eslint-disable-next-line no-console
       console.log("[RTE] tx-mutating", {
         stepsJson: JSON.stringify(steps),
-        meta,
+        metaJson: JSON.stringify(metaSummary),
       });
     },
     editorProps: {
