@@ -116,17 +116,25 @@ export function RichTextEditor({
       } catch (e) {
         metaSummary.__error = String(e);
       }
-      // Capture the call stack at this point so we can see which code
-      // path created the AddMarkStep. The transaction's meta is empty,
-      // which means whoever's authoring it isn't tagging with a plugin
-      // key — the stack trace is the only way to identify the caller.
+      // Log a single grouped block per mutating tx so the full stack
+      // (which Chrome truncates inside object args) prints as a
+      // standalone string, then expand the object data.
       const stack = new Error("rte-tx-stack").stack ?? "";
       // eslint-disable-next-line no-console
-      console.log("[RTE] tx-mutating", {
-        stepsJson: JSON.stringify(steps),
-        metaJson: JSON.stringify(metaSummary),
-        stack,
-      });
+      console.groupCollapsed("[RTE] tx-mutating");
+      // eslint-disable-next-line no-console
+      console.log("steps:", JSON.stringify(steps));
+      // eslint-disable-next-line no-console
+      console.log("meta:", JSON.stringify(metaSummary));
+      // eslint-disable-next-line no-console
+      console.log("stack:");
+      // eslint-disable-next-line no-console
+      console.log(stack);
+      // eslint-disable-next-line no-console
+      console.groupEnd();
+      // Stash the most recent mutating tx on window so the user can
+      // poke at it from devtools (`__rte_lastTx.stack` etc).
+      (window as any).__rte_lastTx = { steps, meta: metaSummary, stack };
     },
     editorProps: {
       attributes: {
