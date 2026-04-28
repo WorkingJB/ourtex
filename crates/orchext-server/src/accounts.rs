@@ -211,6 +211,76 @@ pub async fn verify_password(
 /// constant against a timing attacker.
 const DUMMY_PHC: &str = "$argon2id$v=19$m=19456,t=2,p=1$ZHVtbXlkdW1teWR1bW15$Yk8vTGFaZ3Brc2FuZG9tSA";
 
+/// Update an account's display name in place. Trims and rejects empty.
+/// Returns the updated `Account` so the caller can echo it back to the
+/// client without a separate fetch.
+pub async fn update_display_name(
+    db: &PgPool,
+    account_id: Uuid,
+    new_name: &str,
+) -> Result<Account, ApiError> {
+    let trimmed = new_name.trim();
+    if trimmed.is_empty() {
+        return Err(ApiError::InvalidArgument(
+            "display_name must not be empty".into(),
+        ));
+    }
+    let account: Option<Account> = sqlx::query_as(
+        r#"
+        UPDATE accounts SET display_name = $1
+        WHERE id = $2
+        RETURNING id, email, display_name, created_at
+        "#,
+    )
+    .bind(trimmed)
+    .bind(account_id)
+    .fetch_optional(db)
+    .await?;
+    account.ok_or(ApiError::Unauthorized)
+}
+
+/// Change an account's password. Verifies the current password before
+/// hashing and storing the new one. `Unauthorized` covers both
+/// "account vanished" and "wrong current password" so a caller can't
+/// use the response to probe state. Re-applies `MIN_PASSWORD_LEN`.
+pub async fn change_password(
+    db: &PgPool,
+    account_id: Uuid,
+    current: &str,
+    new: &str,
+) -> Result<(), ApiError> {
+    if new.chars().count() < MIN_PASSWORD_LEN {
+        return Err(ApiError::InvalidArgument(format!(
+            "password must be at least {MIN_PASSWORD_LEN} characters"
+        )));
+    }
+
+    let row: Option<AccountWithPassword> = sqlx::query_as(
+        "SELECT id, email, display_name, password, created_at FROM accounts WHERE id = $1",
+    )
+    .bind(account_id)
+    .fetch_optional(db)
+    .await?;
+    let Some(row) = row else {
+        let _ = password::verify(current, DUMMY_PHC);
+        return Err(ApiError::Unauthorized);
+    };
+
+    let ok = password::verify(current, &row.password)
+        .map_err(|e| ApiError::Internal(Box::new(e)))?;
+    if !ok {
+        return Err(ApiError::Unauthorized);
+    }
+
+    let hash = password::hash(new).map_err(|e| ApiError::Internal(Box::new(e)))?;
+    sqlx::query("UPDATE accounts SET password = $1 WHERE id = $2")
+        .bind(&hash)
+        .bind(account_id)
+        .execute(db)
+        .await?;
+    Ok(())
+}
+
 fn normalize_email(raw: &str) -> Result<String, ApiError> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {

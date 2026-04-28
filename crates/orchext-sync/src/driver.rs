@@ -117,6 +117,41 @@ impl RemoteVaultDriver {
         }
         self.client.request_empty(Method::DELETE, url).await
     }
+
+    /// List with both `type` and `team_id` filters. The `VaultDriver`
+    /// trait's `list` contract is type-only because team filtering is
+    /// remote-specific (local vaults have no team concept); this is
+    /// the escape hatch for the desktop's docs view, which surfaces a
+    /// team filter when the active context is an org workspace.
+    pub async fn list_with_filters(
+        &self,
+        type_filter: Option<&str>,
+        team_id: Option<uuid::Uuid>,
+    ) -> VaultResult<Vec<Entry>> {
+        let mut url = vault_url(&self.client, "vault/docs")?;
+        if let Some(t) = type_filter {
+            url.query_pairs_mut().append_pair("type", t);
+        }
+        if let Some(tid) = team_id {
+            url.query_pairs_mut().append_pair("team_id", &tid.to_string());
+        }
+        let resp: ListResponse = self
+            .client
+            .request_json::<(), _>(Method::GET, url, None)
+            .await
+            .map_err(into_vault_err)?;
+        let mut out = Vec::with_capacity(resp.entries.len());
+        for e in resp.entries {
+            let id = DocumentId::new(e.doc_id.clone())
+                .map_err(|_| VaultError::InvalidId(e.doc_id.clone()))?;
+            out.push(Entry {
+                id,
+                type_: e.type_.clone(),
+                path: PathBuf::from(format!("remote://{}/{}.md", e.type_, e.doc_id)),
+            });
+        }
+        Ok(out)
+    }
 }
 
 // ---------- wire types ----------
@@ -174,30 +209,10 @@ struct DocResponse {
 #[async_trait]
 impl VaultDriver for RemoteVaultDriver {
     async fn list(&self, type_filter: Option<&str>) -> VaultResult<Vec<Entry>> {
-        let mut url = vault_url(&self.client, "vault/docs")?;
-        if let Some(t) = type_filter {
-            url.query_pairs_mut().append_pair("type", t);
-        }
-        let resp: ListResponse = self
-            .client
-            .request_json::<(), _>(Method::GET, url, None)
-            .await
-            .map_err(into_vault_err)?;
-
-        let mut out = Vec::with_capacity(resp.entries.len());
-        for e in resp.entries {
-            let id = DocumentId::new(e.doc_id.clone())
-                .map_err(|_| VaultError::InvalidId(e.doc_id.clone()))?;
-            out.push(Entry {
-                id,
-                type_: e.type_.clone(),
-                // Synthetic path; the `VaultDriver` contract doesn't
-                // require the path to exist on disk and downstream code
-                // (orchext-index's reindex) only touches id + type_.
-                path: PathBuf::from(format!("remote://{}/{}.md", e.type_, e.doc_id)),
-            });
-        }
-        Ok(out)
+        // Trait contract is type-only; team filtering goes through the
+        // non-trait `list_with_filters` (called directly from desktop's
+        // doc_list when an org team filter is active).
+        self.list_with_filters(type_filter, None).await
     }
 
     async fn read(&self, id: &DocumentId) -> VaultResult<Document> {

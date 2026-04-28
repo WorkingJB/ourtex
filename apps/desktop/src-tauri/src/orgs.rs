@@ -81,6 +81,46 @@ pub async fn auth_logout(
         .map_err(err)
 }
 
+#[derive(Debug, Deserialize)]
+pub struct UpdateAccountInput {
+    pub display_name: String,
+}
+
+#[tauri::command]
+pub async fn auth_account_update(
+    state: State<'_, AppState>,
+    workspace_id: String,
+    input: UpdateAccountInput,
+) -> Result<orgs::AccountInfo, String> {
+    let c = server_creds(&state, &workspace_id).await?;
+    orgs::auth_account_update(&c.server_url, &c.session_token, input.display_name.trim())
+        .await
+        .map_err(err)
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ChangePasswordInput {
+    pub current_password: String,
+    pub new_password: String,
+}
+
+#[tauri::command]
+pub async fn auth_password_change(
+    state: State<'_, AppState>,
+    workspace_id: String,
+    input: ChangePasswordInput,
+) -> Result<(), String> {
+    let c = server_creds(&state, &workspace_id).await?;
+    orgs::auth_password_change(
+        &c.server_url,
+        &c.session_token,
+        &input.current_password,
+        &input.new_password,
+    )
+    .await
+    .map_err(err)
+}
+
 // ---------- /v1/orgs ----------
 
 #[tauri::command]

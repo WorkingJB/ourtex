@@ -432,6 +432,232 @@ async fn cors_does_not_echo_disallowed_origin(db: PgPool) {
     );
 }
 
+#[sqlx::test(migrations = "./migrations")]
+async fn update_account_changes_display_name(db: PgPool) {
+    let app = router(AppState::new(db).with_rate_limit_auth(false));
+    let signup_resp = app
+        .clone()
+        .oneshot(native_signup_req(
+            "user@example.com",
+            "correct horse battery staple",
+        ))
+        .await
+        .unwrap();
+    let body: Value = read_json(signup_resp.into_body()).await;
+    let secret = body["session"]["secret"].as_str().unwrap().to_string();
+
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri("/v1/auth/account")
+                .header("authorization", format!("Bearer {secret}"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({ "display_name": "  Renamed  " }).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let updated: Value = read_json(resp.into_body()).await;
+    assert_eq!(updated["display_name"], "Renamed");
+
+    // GET /me must reflect the new name.
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/v1/auth/me")
+                .header("authorization", format!("Bearer {secret}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let me: Value = read_json(resp.into_body()).await;
+    assert_eq!(me["account"]["display_name"], "Renamed");
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn update_account_rejects_empty_display_name(db: PgPool) {
+    let app = router(AppState::new(db).with_rate_limit_auth(false));
+    let signup_resp = app
+        .clone()
+        .oneshot(native_signup_req(
+            "user@example.com",
+            "correct horse battery staple",
+        ))
+        .await
+        .unwrap();
+    let body: Value = read_json(signup_resp.into_body()).await;
+    let secret = body["session"]["secret"].as_str().unwrap().to_string();
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri("/v1/auth/account")
+                .header("authorization", format!("Bearer {secret}"))
+                .header("content-type", "application/json")
+                .body(Body::from(json!({ "display_name": "   " }).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn change_password_old_no_longer_works(db: PgPool) {
+    let app = router(AppState::new(db).with_rate_limit_auth(false));
+    let signup_resp = app
+        .clone()
+        .oneshot(native_signup_req(
+            "user@example.com",
+            "correct horse battery staple",
+        ))
+        .await
+        .unwrap();
+    let body: Value = read_json(signup_resp.into_body()).await;
+    let secret = body["session"]["secret"].as_str().unwrap().to_string();
+
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/auth/password")
+                .header("authorization", format!("Bearer {secret}"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "current_password": "correct horse battery staple",
+                        "new_password": "another sturdy passphrase"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+
+    // Old password no longer logs in.
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/auth/native/login")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "email": "user@example.com",
+                        "password": "correct horse battery staple"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+
+    // New password does.
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/auth/native/login")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "email": "user@example.com",
+                        "password": "another sturdy passphrase"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn change_password_wrong_current_unauthorized(db: PgPool) {
+    let app = router(AppState::new(db).with_rate_limit_auth(false));
+    let signup_resp = app
+        .clone()
+        .oneshot(native_signup_req(
+            "user@example.com",
+            "correct horse battery staple",
+        ))
+        .await
+        .unwrap();
+    let body: Value = read_json(signup_resp.into_body()).await;
+    let secret = body["session"]["secret"].as_str().unwrap().to_string();
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/auth/password")
+                .header("authorization", format!("Bearer {secret}"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "current_password": "wrong-current-password",
+                        "new_password": "another sturdy passphrase"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn change_password_short_new_rejected(db: PgPool) {
+    let app = router(AppState::new(db).with_rate_limit_auth(false));
+    let signup_resp = app
+        .clone()
+        .oneshot(native_signup_req(
+            "user@example.com",
+            "correct horse battery staple",
+        ))
+        .await
+        .unwrap();
+    let body: Value = read_json(signup_resp.into_body()).await;
+    let secret = body["session"]["secret"].as_str().unwrap().to_string();
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/auth/password")
+                .header("authorization", format!("Bearer {secret}"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "current_password": "correct horse battery staple",
+                        "new_password": "short"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
+
 // ---------- helpers ----------
 
 fn signup_req(email: &str, password: &str) -> Request<Body> {

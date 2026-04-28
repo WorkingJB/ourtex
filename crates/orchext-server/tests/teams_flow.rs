@@ -231,6 +231,81 @@ async fn team_doc_visible_only_to_team_members(db: PgPool) {
 }
 
 #[sqlx::test(migrations = "./migrations")]
+async fn team_id_filter_narrows_listing(db: PgPool) {
+    let app = self_hosted_router(db);
+    let owner = signup(&app, "owner@example.com").await;
+    let owner_orgs = get_orgs(&app, &owner).await;
+    let org_id = owner_orgs["memberships"][0]["org_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let tenant_id = owner_orgs["memberships"][0]["tenant_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let eng = create_team(&app, &owner, &org_id, "Eng").await;
+    let eng_id = eng["id"].as_str().unwrap().to_string();
+    let product = create_team(&app, &owner, &org_id, "Product").await;
+    let product_id = product["id"].as_str().unwrap().to_string();
+
+    write_team_doc(&app, &owner, &tenant_id, "eng-handbook", &eng_id).await;
+    write_team_doc(&app, &owner, &tenant_id, "product-roadmap", &product_id).await;
+
+    // No filter → both team docs visible to the owner (org admin).
+    let all = doc_list(&app, &owner, &tenant_id).await;
+    let titles: Vec<&str> = all
+        .iter()
+        .filter_map(|e| e["doc_id"].as_str())
+        .collect();
+    assert!(titles.contains(&"eng-handbook"));
+    assert!(titles.contains(&"product-roadmap"));
+
+    // Filter to Eng → only the Eng doc.
+    let eng_only = doc_list_with_query(
+        &app,
+        &owner,
+        &tenant_id,
+        &format!("team_id={eng_id}"),
+    )
+    .await;
+    let eng_titles: Vec<&str> = eng_only
+        .iter()
+        .filter_map(|e| e["doc_id"].as_str())
+        .collect();
+    assert_eq!(eng_titles, vec!["eng-handbook"]);
+
+    // Filter to Product → only the Product doc.
+    let product_only = doc_list_with_query(
+        &app,
+        &owner,
+        &tenant_id,
+        &format!("team_id={product_id}"),
+    )
+    .await;
+    let product_titles: Vec<&str> = product_only
+        .iter()
+        .filter_map(|e| e["doc_id"].as_str())
+        .collect();
+    assert_eq!(product_titles, vec!["product-roadmap"]);
+
+    // Non-member filtering by team_id sees nothing — team docs are
+    // visibility-gated regardless of the filter, so no info leaks
+    // about which teams have content.
+    let bob = approve_member(&app, &owner, &org_id, "bob@example.com").await;
+    let bob_filtered = doc_list_with_query(
+        &app,
+        &bob,
+        &tenant_id,
+        &format!("team_id={eng_id}"),
+    )
+    .await;
+    assert!(
+        bob_filtered.is_empty(),
+        "non-member must see empty list when filtering by team_id"
+    );
+}
+
+#[sqlx::test(migrations = "./migrations")]
 async fn team_doc_requires_team_id(db: PgPool) {
     let app = self_hosted_router(db);
     let owner = signup(&app, "owner@example.com").await;
@@ -617,12 +692,26 @@ async fn write_team_doc(
 }
 
 async fn doc_list(app: &axum::Router, bearer: &str, tenant_id: &str) -> Vec<Value> {
+    doc_list_with_query(app, bearer, tenant_id, "").await
+}
+
+async fn doc_list_with_query(
+    app: &axum::Router,
+    bearer: &str,
+    tenant_id: &str,
+    query: &str,
+) -> Vec<Value> {
+    let uri = if query.is_empty() {
+        format!("/v1/t/{tenant_id}/vault/docs")
+    } else {
+        format!("/v1/t/{tenant_id}/vault/docs?{query}")
+    };
     let resp = app
         .clone()
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri(format!("/v1/t/{tenant_id}/vault/docs"))
+                .uri(uri)
                 .header("authorization", format!("Bearer {bearer}"))
                 .body(Body::empty())
                 .unwrap(),

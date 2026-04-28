@@ -70,6 +70,11 @@ struct ListResponse {
 struct ListQuery {
     #[serde(rename = "type")]
     type_: Option<String>,
+    /// Restrict the listing to a single team's documents. Combined with
+    /// the existing visibility filter — non-members of the requested
+    /// team see an empty list, not a 404, so the endpoint doesn't leak
+    /// "does this team exist" info.
+    team_id: Option<Uuid>,
 }
 
 #[derive(Debug, Serialize)]
@@ -140,65 +145,43 @@ async fn list_docs(
         team_id: Option<Uuid>,
     }
 
-    // Two queries (docs, tags-for-those-docs) joined in Rust. Ungrouped
-    // array_agg would work too but keeps the binding simpler this way.
-    //
     // Visibility filter has two clauses:
     //   * private: only the author (or NULL legacy rows) may see it.
     //   * team: only org admins/owners or the team's members may see
     //     it. `$N::bool` short-circuits on admins so the membership
     //     subquery doesn't fire for them.
+    //
+    // Optional filters (`type_`, `team_id`) use `$N::T IS NULL OR …` so
+    // a single query covers both "filter present" and "absent" without
+    // branching. Postgres folds the constant null check at plan time.
     let is_org_admin = tc.is_admin();
-    let rows: Vec<Row> = if let Some(ref t) = q.type_ {
-        sqlx::query_as(
-            r#"
-            SELECT doc_id, type_, visibility, title,
-                   (frontmatter->>'updated')::date AS updated,
-                   team_id
-            FROM documents
-            WHERE tenant_id = $1 AND type_ = $2
-              AND (visibility != 'private'
-                   OR author_account_id = $3
-                   OR author_account_id IS NULL)
-              AND (visibility != 'team'
-                   OR $4::bool
-                   OR team_id IN (
-                       SELECT team_id FROM team_memberships WHERE account_id = $3
-                   ))
-            ORDER BY updated_at DESC, doc_id ASC
-            "#,
-        )
-        .bind(tc.tenant_id)
-        .bind(t)
-        .bind(tc.account_id)
-        .bind(is_org_admin)
-        .fetch_all(&state.db)
-        .await?
-    } else {
-        sqlx::query_as(
-            r#"
-            SELECT doc_id, type_, visibility, title,
-                   (frontmatter->>'updated')::date AS updated,
-                   team_id
-            FROM documents
-            WHERE tenant_id = $1
-              AND (visibility != 'private'
-                   OR author_account_id = $2
-                   OR author_account_id IS NULL)
-              AND (visibility != 'team'
-                   OR $3::bool
-                   OR team_id IN (
-                       SELECT team_id FROM team_memberships WHERE account_id = $2
-                   ))
-            ORDER BY updated_at DESC, doc_id ASC
-            "#,
-        )
-        .bind(tc.tenant_id)
-        .bind(tc.account_id)
-        .bind(is_org_admin)
-        .fetch_all(&state.db)
-        .await?
-    };
+    let rows: Vec<Row> = sqlx::query_as(
+        r#"
+        SELECT doc_id, type_, visibility, title,
+               (frontmatter->>'updated')::date AS updated,
+               team_id
+        FROM documents
+        WHERE tenant_id = $1
+          AND ($2::text IS NULL OR type_ = $2)
+          AND ($3::uuid IS NULL OR team_id = $3)
+          AND (visibility != 'private'
+               OR author_account_id = $4
+               OR author_account_id IS NULL)
+          AND (visibility != 'team'
+               OR $5::bool
+               OR team_id IN (
+                   SELECT team_id FROM team_memberships WHERE account_id = $4
+               ))
+        ORDER BY updated_at DESC, doc_id ASC
+        "#,
+    )
+    .bind(tc.tenant_id)
+    .bind(q.type_.as_deref())
+    .bind(q.team_id)
+    .bind(tc.account_id)
+    .bind(is_org_admin)
+    .fetch_all(&state.db)
+    .await?;
 
     let ids: Vec<String> = rows.iter().map(|r| r.doc_id.clone()).collect();
     let tags_by_doc = load_tags_for_docs(&state, tc.tenant_id, &ids).await?;

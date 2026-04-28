@@ -364,6 +364,10 @@ function MainApp() {
             <SettingsView
               tenant={contextToMembership(active)}
               ctx={active}
+              profile={auth.profile}
+              onProfileUpdated={(profile) => {
+                setAuth({ kind: "authenticated", profile });
+              }}
               onOrgUpdated={(updated) => {
                 // Live-update the rail entry so the new name/logo
                 // shows immediately without refetching.

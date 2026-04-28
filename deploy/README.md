@@ -95,7 +95,18 @@ The workflow is gated by a paths filter — only changes to
 `crates/**`, `Cargo.{toml,lock}`, or `deploy/fly/**` trigger a build,
 so doc-only or web-only commits don't burn a Rust build.
 
-Requires the `FLY_API_TOKEN` repo secret (`flyctl auth token`).
+Requires two repo secrets, both scoped deploy tokens:
+
+| Secret | How to mint | Used for |
+|---|---|---|
+| `FLY_API_TOKEN_TEST` | `flyctl tokens create deploy --app orchext-test --name "github-actions-test" --expiry 8760h` | `develop` → `orchext-test` |
+| `FLY_API_TOKEN_PROD` | `flyctl tokens create deploy --app orchext-prod --name "github-actions-prod" --expiry 8760h` | `main` → `orchext-prod` |
+
+Scoped deploy tokens (vs. `flyctl auth token`) limit the blast radius
+of a leak to the single Fly app — they can't read other secrets,
+deploy other apps, or destroy machines. Rotate by re-running the
+`flyctl tokens create` command and pasting the new value over the
+secret in GitHub.
 
 For ad-hoc rollouts (debugging, hotfix from a dev machine), manual
 deploy still works:

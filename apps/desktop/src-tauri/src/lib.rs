@@ -53,6 +53,8 @@ pub fn run() {
             proposals::proposal_reject,
             orgs::auth_me,
             orgs::auth_logout,
+            orgs::auth_account_update,
+            orgs::auth_password_change,
             orgs::orgs_list,
             orgs::org_create,
             orgs::org_get,

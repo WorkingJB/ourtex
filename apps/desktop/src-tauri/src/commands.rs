@@ -670,13 +670,30 @@ pub struct DocInput {
 }
 
 #[tauri::command]
-pub async fn doc_list(state: State<'_, AppState>) -> Result<Vec<DocListItem>, String> {
+pub async fn doc_list(
+    state: State<'_, AppState>,
+    team_id: Option<uuid::Uuid>,
+) -> Result<Vec<DocListItem>, String> {
     let svcs = state.active_services().await?;
-    let entries = svcs
-        .vault
-        .list(None)
-        .await
-        .map_err(|e| format!("list: {e}"))?;
+    // Team filter is remote-only — local vaults have no team concept.
+    // For remote workspaces, route through the team-aware path so the
+    // server-side `team_id` filter applies.
+    let entries = if let (Some(tid), true) = (team_id, svcs.is_remote()) {
+        let client = svcs
+            .remote_client
+            .as_ref()
+            .ok_or_else(|| "remote workspace missing client".to_string())?;
+        let driver = orchext_sync::RemoteVaultDriver::new((**client).clone());
+        driver
+            .list_with_filters(None, Some(tid))
+            .await
+            .map_err(|e| format!("list: {e}"))?
+    } else {
+        svcs.vault
+            .list(None)
+            .await
+            .map_err(|e| format!("list: {e}"))?
+    };
 
     // Pull each doc's frontmatter so the list reflects visibility, tags,
     // updated, and a sensible title. For v1 vault sizes (hundreds of

@@ -32,6 +32,12 @@ export function DocumentsView({
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [typeFilter, setTypeFilter] = useState<string | null>(null);
   const [section, setSection] = useState<Section>("all");
+  /// Team filter applied server-side via `?team_id=…` (org workspaces
+  /// only — the local vault has no team concept). Forces section to
+  /// "all" when set: section filters on visibility, team docs are
+  /// neither private nor org, so combining the filters always renders
+  /// an empty list.
+  const [teamFilter, setTeamFilter] = useState<string | null>(null);
   const [detail, setDetail] = useState<DocDetail | null>(null);
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -58,7 +64,7 @@ export function DocumentsView({
 
   async function refreshList() {
     try {
-      const list = await api.docList();
+      const list = await api.docList({ teamId: teamFilter });
       setItems(list);
       await onMutated?.();
     } catch (e) {
@@ -74,9 +80,16 @@ export function DocumentsView({
     setCreating(false);
     setSection("all");
     setTypeFilter(null);
+    setTeamFilter(null);
     void refreshList();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ctx.workspaceId]);
+
+  // teamFilter changes alone re-fetch but don't reset selection state.
+  useEffect(() => {
+    void refreshList();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [teamFilter]);
 
   useEffect(() => {
     if (ctx.kind !== "org") {
@@ -179,6 +192,7 @@ export function DocumentsView({
               onClick={() => {
                 setSection("mine");
                 setTypeFilter(null);
+                setTeamFilter(null);
               }}
             />
             <SectionBtn
@@ -188,6 +202,7 @@ export function DocumentsView({
               onClick={() => {
                 setSection("org");
                 setTypeFilter(null);
+                setTeamFilter(null);
               }}
             />
           </div>
@@ -226,6 +241,24 @@ export function DocumentsView({
               );
             })}
           </select>
+          {isOrg && teams.length > 0 && (
+            <select
+              value={teamFilter ?? ""}
+              onChange={(e) => {
+                const next = e.target.value || null;
+                setTeamFilter(next);
+                if (next) setSection("all");
+              }}
+              className="w-full px-2 py-1 border border-neutral-300 rounded text-xs bg-white"
+            >
+              <option value="">All teams</option>
+              {teams.map((t) => (
+                <option key={t.id} value={t.id}>
+                  {t.name}
+                </option>
+              ))}
+            </select>
+          )}
         </div>
         {visible.length === 0 && (
           <div className="p-6 text-sm text-neutral-500 text-center">

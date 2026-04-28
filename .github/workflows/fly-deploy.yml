@@ -72,6 +72,11 @@ jobs:
         # Build context is the repo root (`.`) because the Dockerfile
         # at crates/orchext-server/Dockerfile expects to see the whole
         # workspace.
+        #
+        # Per-env tokens: each `FLY_API_TOKEN_*` is a scoped deploy
+        # token (`flyctl tokens create deploy --app <app>`) so a leak
+        # of one secret can only redeploy the matching app, nothing
+        # broader in the Fly account.
         run: flyctl deploy . --config ${{ steps.config.outputs.path }} --remote-only
         env:
-          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+          FLY_API_TOKEN: ${{ steps.target.outputs.env == 'prod' && secrets.FLY_API_TOKEN_PROD || secrets.FLY_API_TOKEN_TEST }}

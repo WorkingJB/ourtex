@@ -12,6 +12,7 @@ export function LoginView({
   const [mode, setMode] = useState<Mode>("login");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
   const [displayName, setDisplayName] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -19,6 +20,10 @@ export function LoginView({
   async function submit(e: FormEvent) {
     e.preventDefault();
     setError(null);
+    if (mode === "signup" && password !== confirmPassword) {
+      setError("Passwords do not match.");
+      return;
+    }
     setBusy(true);
     try {
       const resp =
@@ -74,6 +79,17 @@ export function LoginView({
 
         {mode === "signup" && (
           <>
+            <label className="block text-sm mb-1">Confirm password</label>
+            <input
+              type="password"
+              autoComplete="new-password"
+              required
+              minLength={8}
+              value={confirmPassword}
+              onChange={(e) => setConfirmPassword(e.target.value)}
+              className="w-full border border-neutral-300 rounded-md px-3 py-2 mb-3 text-sm"
+            />
+
             <label className="block text-sm mb-1">
               Display name <span className="text-neutral-400">(optional)</span>
             </label>

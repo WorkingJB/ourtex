@@ -15,6 +15,8 @@
 //! Shared protected routes:
 //! - `GET    /v1/auth/me`       — current account (authenticated)
 //! - `GET    /v1/auth/sessions` — list active sessions (authenticated)
+//! - `PATCH  /v1/auth/account`  — update display name
+//! - `POST   /v1/auth/password` — change password (current + new)
 //! - `DELETE /v1/auth/logout`   — revoke the current session
 //!
 //! Session middleware on the authenticated routes extracts the bearer
@@ -33,7 +35,7 @@ use axum::{
     http::{header, HeaderMap, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Response},
-    routing::{delete, get, post},
+    routing::{delete, get, patch, post},
     Extension, Json, Router,
 };
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
@@ -93,6 +95,8 @@ pub fn router(state: AppState) -> Router<AppState> {
     let protected = Router::new()
         .route("/me", get(me_handler))
         .route("/sessions", get(sessions_handler))
+        .route("/account", patch(update_account_handler))
+        .route("/password", post(change_password_handler))
         .route("/logout", delete(logout_handler))
         .route_layer(middleware::from_fn(csrf_guard))
         .route_layer(middleware::from_fn_with_state(
@@ -312,6 +316,42 @@ async fn sessions_handler(
 ) -> Result<Json<SessionsResponse>, ApiError> {
     let sessions = state.sessions.list_for_account(ctx.account_id).await?;
     Ok(Json(SessionsResponse { sessions }))
+}
+
+#[derive(Debug, Deserialize)]
+struct UpdateAccountRequest {
+    display_name: String,
+}
+
+async fn update_account_handler(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<SessionContext>,
+    Json(input): Json<UpdateAccountRequest>,
+) -> Result<Json<AccountDto>, ApiError> {
+    let updated =
+        accounts::update_display_name(&state.db, ctx.account_id, &input.display_name).await?;
+    Ok(Json(updated.into()))
+}
+
+#[derive(Debug, Deserialize)]
+struct ChangePasswordRequest {
+    current_password: String,
+    new_password: String,
+}
+
+async fn change_password_handler(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<SessionContext>,
+    Json(input): Json<ChangePasswordRequest>,
+) -> Result<StatusCode, ApiError> {
+    accounts::change_password(
+        &state.db,
+        ctx.account_id,
+        &input.current_password,
+        &input.new_password,
+    )
+    .await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn logout_handler(

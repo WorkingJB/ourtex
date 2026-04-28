@@ -48,6 +48,11 @@ export function DocumentsView({
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [typeFilter, setTypeFilter] = useState<string | null>(null);
   const [section, setSection] = useState<Section>("all");
+  /// Team filter applied server-side via `?team_id=…`. When set, the
+  /// section filter is forced to "all" — `mine`/`org` filter on
+  /// visibility, and team docs are neither, so applying both would
+  /// always render an empty list.
+  const [teamFilter, setTeamFilter] = useState<string | null>(null);
   const [detail, setDetail] = useState<Load<DocDetail> | null>(null);
   const [creating, setCreating] = useState(false);
   // Teams visible to the viewer in this org context. Drives the
@@ -75,7 +80,7 @@ export function DocumentsView({
 
   async function refreshList() {
     try {
-      const list = await api.docList(tenant.tenant_id);
+      const list = await api.docList(tenant.tenant_id, { teamId: teamFilter });
       setEntries({ state: "ready", data: list.entries });
     } catch (e) {
       setEntries({ state: "error", message: errMessage(e) });
@@ -88,9 +93,18 @@ export function DocumentsView({
     setSelectedId(null);
     setDetail(null);
     setCreating(false);
+    setTeamFilter(null);
+    setSection("all");
     void refreshList();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tenant.tenant_id]);
+
+  // teamFilter changes alone re-fetch but don't reset selection state,
+  // so the user can switch teams without losing the selected section.
+  useEffect(() => {
+    void refreshList();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [teamFilter]);
 
   // Fetch teams for the active org. Used by the doc editor — the
   // visibility=team option and team picker depend on this list.
@@ -194,6 +208,7 @@ export function DocumentsView({
               onClick={() => {
                 setSection("mine");
                 setTypeFilter(null);
+                setTeamFilter(null);
               }}
             />
             <SectionBtn
@@ -203,6 +218,7 @@ export function DocumentsView({
               onClick={() => {
                 setSection("org");
                 setTypeFilter(null);
+                setTeamFilter(null);
               }}
             />
           </div>
@@ -243,6 +259,27 @@ export function DocumentsView({
               );
             })}
           </select>
+          {isOrg && teams.length > 0 && (
+            <select
+              value={teamFilter ?? ""}
+              onChange={(e) => {
+                const next = e.target.value || null;
+                setTeamFilter(next);
+                // Section filters on visibility (private/org); team
+                // docs are neither, so combining them with mine/org
+                // would always render an empty list.
+                if (next) setSection("all");
+              }}
+              className="w-full px-2 py-1 border border-neutral-300 rounded text-xs bg-white"
+            >
+              <option value="">All teams</option>
+              {teams.map((t) => (
+                <option key={t.id} value={t.id}>
+                  {t.name}
+                </option>
+              ))}
+            </select>
+          )}
         </div>
         {entries.state === "error" && (
           <div className="p-4 text-sm text-red-600">{entries.message}</div>

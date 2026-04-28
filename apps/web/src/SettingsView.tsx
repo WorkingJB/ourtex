@@ -1,31 +1,42 @@
 import { useEffect, useMemo, useState } from "react";
 import { Membership, Organization } from "./api";
 import { Context } from "./OrgRail";
+import { SessionProfile } from "./session";
 import { TokensView } from "./TokensView";
 import { AuditView } from "./AuditView";
 import { MembersView } from "./MembersView";
 import { OrgSettingsView } from "./OrgSettingsView";
 import { TeamsView } from "./TeamsView";
+import { AccountSettingsView } from "./AccountSettingsView";
 
-type Tab = "members" | "teams" | "org" | "tokens" | "audit";
+type Tab = "account" | "members" | "teams" | "org" | "tokens" | "audit";
 
-/// Settings hub. Wraps the per-feature views (Members, Org settings,
-/// Tokens, Audit) under a single top-level nav slot so the right-side
-/// nav stays sparse. Tabs are role-gated:
+/// Settings hub. Wraps the per-feature views (Account, Members, Org
+/// settings, Tokens, Audit) under a single top-level nav slot so the
+/// right-side nav stays sparse. Tabs are role/context-gated:
+///   * `account` — personal workspace only (per-account profile +
+///     password live there because that's where users instinctively
+///     look for them; the underlying endpoints are session-scoped).
 ///   * `members`, `org` — admin/owner of an org tenant only
 ///   * `tokens`, `audit` — everyone (per-tenant data)
-/// Personal vaults therefore only show Tokens and Audit.
+/// Personal vaults therefore show Account, Tokens, Audit.
 export function SettingsView({
   tenant,
   ctx,
+  profile,
   onOrgUpdated,
+  onProfileUpdated,
 }: {
   tenant: Membership;
   ctx: Context;
+  profile: SessionProfile;
   /// Called when the user saves changes from the Organization tab.
   /// App uses this to live-update the rail so the new name/logo
   /// shows immediately without a refetch.
   onOrgUpdated?: (org: Organization) => void;
+  /// Called after a display-name save in the Account tab so the
+  /// header name updates live.
+  onProfileUpdated: (profile: SessionProfile) => void;
 }) {
   const isOrg = ctx.kind === "org";
   const isAdmin =
@@ -33,6 +44,9 @@ export function SettingsView({
 
   const availableTabs = useMemo<Tab[]>(() => {
     const tabs: Tab[] = [];
+    if (!isOrg) {
+      tabs.push("account");
+    }
     if (isOrg && isAdmin) {
       tabs.push("members");
     }
@@ -73,6 +87,12 @@ export function SettingsView({
         ))}
       </div>
       <div className="flex-1 min-h-0 overflow-auto">
+        {tab === "account" && (
+          <AccountSettingsView
+            profile={profile}
+            onProfileUpdated={onProfileUpdated}
+          />
+        )}
         {tab === "members" && isOrg && (
           <MembersView ctx={ctx as Context & { kind: "org" }} />
         )}
@@ -93,6 +113,7 @@ export function SettingsView({
 }
 
 const LABELS: Record<Tab, string> = {
+  account: "Account",
   members: "Members",
   teams: "Teams",
   org: "Organization",

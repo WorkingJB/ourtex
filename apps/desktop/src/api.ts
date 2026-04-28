@@ -304,7 +304,10 @@ export const api = {
   workspaceRename: (id: string, name: string) =>
     invoke<void>("workspace_rename", { id, name }),
   vaultInfo: () => invoke<VaultInfo | null>("vault_info"),
-  docList: () => invoke<DocListItem[]>("doc_list"),
+  docList: (opts?: { teamId?: string | null }) =>
+    invoke<DocListItem[]>("doc_list", {
+      teamId: opts?.teamId ?? null,
+    }),
   docRead: (id: string) => invoke<DocDetail>("doc_read", { id }),
   docWrite: (input: DocInput) => invoke<DocDetail>("doc_write", { input }),
   docDelete: (id: string) => invoke<void>("doc_delete", { id }),
@@ -337,6 +340,23 @@ export const api = {
     invoke<MeResponse>("auth_me", { workspaceId }),
   authLogout: (workspaceId: string) =>
     invoke<void>("auth_logout", { workspaceId }),
+  authAccountUpdate: (workspaceId: string, displayName: string) =>
+    invoke<AccountInfo>("auth_account_update", {
+      workspaceId,
+      input: { display_name: displayName },
+    }),
+  authPasswordChange: (
+    workspaceId: string,
+    currentPassword: string,
+    newPassword: string
+  ) =>
+    invoke<void>("auth_password_change", {
+      workspaceId,
+      input: {
+        current_password: currentPassword,
+        new_password: newPassword,
+      },
+    }),
 
   // ---------- Orgs ----------
   orgsList: (workspaceId: string) =>

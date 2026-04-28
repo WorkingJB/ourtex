@@ -197,6 +197,26 @@ async fn send_json<B: Serialize, T: serde::de::DeserializeOwned>(
     }
 }
 
+async fn send_json_no_resp<B: Serialize>(
+    method: Method,
+    url: Url,
+    token: &str,
+    body: &B,
+) -> Result<()> {
+    let resp = reqwest::Client::new()
+        .request(method, url)
+        .bearer_auth(token)
+        .json(body)
+        .send()
+        .await?;
+    let status = resp.status();
+    if status.is_success() {
+        Ok(())
+    } else {
+        Err(translate_error(status, resp).await)
+    }
+}
+
 async fn delete_no_body(url: Url, token: &str) -> Result<()> {
     let resp = reqwest::Client::new()
         .request(Method::DELETE, url)
@@ -233,6 +253,49 @@ pub async fn auth_me(server_url: &Url, token: &str) -> Result<MeResponse> {
 
 pub async fn auth_logout(server_url: &Url, token: &str) -> Result<()> {
     delete_no_body(server_url.join("v1/auth/logout")?, token).await
+}
+
+#[derive(Debug, Serialize)]
+struct UpdateAccountInput<'a> {
+    display_name: &'a str,
+}
+
+pub async fn auth_account_update(
+    server_url: &Url,
+    token: &str,
+    display_name: &str,
+) -> Result<AccountInfo> {
+    send_json(
+        Method::PATCH,
+        server_url.join("v1/auth/account")?,
+        token,
+        &UpdateAccountInput { display_name },
+    )
+    .await
+}
+
+#[derive(Debug, Serialize)]
+struct ChangePasswordInput<'a> {
+    current_password: &'a str,
+    new_password: &'a str,
+}
+
+pub async fn auth_password_change(
+    server_url: &Url,
+    token: &str,
+    current_password: &str,
+    new_password: &str,
+) -> Result<()> {
+    send_json_no_resp(
+        Method::POST,
+        server_url.join("v1/auth/password")?,
+        token,
+        &ChangePasswordInput {
+            current_password,
+            new_password,
+        },
+    )
+    .await
 }
 
 // ---------- /v1/orgs ----------

@@ -380,6 +380,13 @@ export const api = {
   logout: () => request<void>("DELETE", "/v1/auth/logout"),
   me: () =>
     request<{ account: AccountDto; session_id: string }>("GET", "/v1/auth/me"),
+  accountUpdate: (display_name: string) =>
+    request<AccountDto>("PATCH", "/v1/auth/account", { display_name }),
+  passwordChange: (current_password: string, new_password: string) =>
+    request<void>("POST", "/v1/auth/password", {
+      current_password,
+      new_password,
+    }),
 
   tenants: () =>
     request<{ memberships: Membership[] }>("GET", "/v1/tenants"),
@@ -550,11 +557,15 @@ export const api = {
   orgLogoDelete: (orgId: string) =>
     request<void>("DELETE", `/v1/orgs/${encodeURIComponent(orgId)}/logo`),
 
-  docList: (tenantId: string) =>
-    request<{ entries: ListEntry[] }>(
+  docList: (tenantId: string, opts?: { teamId?: string | null }) => {
+    const params = new URLSearchParams();
+    if (opts?.teamId) params.set("team_id", opts.teamId);
+    const qs = params.toString();
+    return request<{ entries: ListEntry[] }>(
       "GET",
-      `/v1/t/${tenantId}/vault/docs`
-    ),
+      `/v1/t/${tenantId}/vault/docs${qs ? `?${qs}` : ""}`
+    );
+  },
   docRead: (tenantId: string, docId: string) =>
     request<DocResponse>(
       "GET",

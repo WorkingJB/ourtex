@@ -6,17 +6,21 @@ import { AuditView } from "./AuditView";
 import { MembersView } from "./MembersView";
 import { OrgSettingsView } from "./OrgSettingsView";
 import { TeamsView } from "./TeamsView";
+import { AccountSettingsView } from "./AccountSettingsView";
 
-type Tab = "members" | "teams" | "org" | "tokens" | "audit";
+type Tab = "account" | "members" | "teams" | "org" | "tokens" | "audit";
 
 /// Settings hub. Wraps the per-feature views under a single top-level
 /// nav slot so the right-side nav stays sparse (Docs / Settings).
-/// Tabs are role-gated:
+/// Tabs are role/context-gated:
+///   * `account` — remote personal workspace only (per-account profile
+///     + change password live there because that's where users
+///     instinctively look; the underlying endpoints are
+///     session-scoped, but local vaults have no remote account at all
+///     so the tab is hidden there).
 ///   * `members`, `org` — admin/owner of an org context only
-///   * `tokens`, `audit` — every remote workspace
-/// Local vaults route into the Settings hub too but currently only
-/// show the existing Tokens (local-only token store) + Audit panes,
-/// since the org/members tabs aren't meaningful without a server.
+///   * `tokens`, `audit` — every workspace (including local)
+/// Local vaults therefore only show Tokens + Audit.
 export function SettingsView({
   ctx,
   onOrgUpdated,
@@ -30,11 +34,15 @@ export function SettingsView({
   onMutated?: () => void | Promise<void>;
 }) {
   const isOrg = ctx.kind === "org";
+  const isPersonal = ctx.kind === "personal";
   const isAdmin =
     isOrg && (ctx.role === "owner" || ctx.role === "admin");
 
   const availableTabs = useMemo<Tab[]>(() => {
     const tabs: Tab[] = [];
+    if (isPersonal) {
+      tabs.push("account");
+    }
     if (isOrg && isAdmin) {
       tabs.push("members");
     }
@@ -47,7 +55,7 @@ export function SettingsView({
     tabs.push("tokens");
     tabs.push("audit");
     return tabs;
-  }, [isOrg, isAdmin]);
+  }, [isOrg, isPersonal, isAdmin]);
 
   const [tab, setTab] = useState<Tab>(availableTabs[0]);
 
@@ -72,6 +80,9 @@ export function SettingsView({
         ))}
       </div>
       <div className="flex-1 min-h-0 overflow-auto">
+        {tab === "account" && isPersonal && (
+          <AccountSettingsView workspaceId={ctx.workspaceId} />
+        )}
         {tab === "members" && isOrg && (
           <MembersView ctx={ctx as Context & { kind: "org" }} />
         )}
@@ -94,6 +105,7 @@ export function SettingsView({
 }
 
 const LABELS: Record<Tab, string> = {
+  account: "Account",
   members: "Members",
   teams: "Teams",
   org: "Organization",
