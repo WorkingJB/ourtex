@@ -82,18 +82,29 @@ export function RichTextEditor({
     },
     onTransaction: ({ transaction }) => {
       if (!debugEditor()) return;
+      // Skip noisy selection-only transactions; we only care about the
+      // ones that mutate the doc (those are the bold-bug suspects).
+      if (!transaction.docChanged) return;
       const steps = transaction.steps.map((s: any) => ({
         type: s.constructor?.name,
-        // Most ProseMirror steps expose `.from`/`.to`/`.mark`. Stringify
-        // each step's JSON for full structural visibility on the AddMark
-        // step we suspect is firing.
         json: typeof s.toJSON === "function" ? s.toJSON() : null,
       }));
+      // Stringify the steps inline (Chrome lazy-renders object refs).
+      // Meta keys are plugin instances; coerce to strings so they
+      // serialize cleanly without circular-ref errors.
+      const metaRaw = (transaction as any).meta ?? {};
+      const meta: Record<string, unknown> = {};
+      for (const k in metaRaw) {
+        try {
+          meta[String(k)] = metaRaw[k];
+        } catch {
+          meta[String(k)] = "<unserializable>";
+        }
+      }
       // eslint-disable-next-line no-console
-      console.log("[RTE] tx", {
-        docChanged: transaction.docChanged,
-        steps,
-        meta: (transaction as any).meta,
+      console.log("[RTE] tx-mutating", {
+        stepsJson: JSON.stringify(steps),
+        meta,
       });
     },
     editorProps: {
