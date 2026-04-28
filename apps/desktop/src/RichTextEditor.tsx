@@ -195,6 +195,7 @@ function Toolbar({
       />
       <div className="ml-auto">
         <button
+          type="button"
           onClick={onToggleAdvanced}
           title="Advanced — show raw markdown"
           className={
