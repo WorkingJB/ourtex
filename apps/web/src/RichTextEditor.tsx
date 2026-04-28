@@ -162,6 +162,53 @@ export function RichTextEditor({
     }
   }, [editor, value]);
 
+  // Debug-only global event capture. Logs every click anywhere in the
+  // document with its target, detail (click count), and isTrusted, so
+  // we can see if the click that ends up at the bold button has been
+  // dispatched programmatically (detail=0) or is a real mouse click.
+  useEffect(() => {
+    if (!debugEditor()) return;
+    const onClick = (e: MouseEvent) => {
+      const t = e.target as HTMLElement | null;
+      // eslint-disable-next-line no-console
+      console.log("[RTE] global-click", {
+        phase: "capture",
+        type: e.type,
+        detail: e.detail,
+        isTrusted: e.isTrusted,
+        button: e.button,
+        clientX: e.clientX,
+        clientY: e.clientY,
+        targetTag: t?.tagName,
+        targetText: t?.textContent?.slice(0, 30),
+        active: document.activeElement?.tagName,
+      });
+    };
+    const onKey = (e: KeyboardEvent) => {
+      // eslint-disable-next-line no-console
+      console.log("[RTE] global-key", {
+        type: e.type,
+        key: e.key,
+        code: e.code,
+        meta: e.metaKey,
+        ctrl: e.ctrlKey,
+        alt: e.altKey,
+        shift: e.shiftKey,
+        active: document.activeElement?.tagName,
+      });
+    };
+    document.addEventListener("click", onClick, true);
+    document.addEventListener("dblclick", onClick, true);
+    document.addEventListener("mousedown", onClick, true);
+    document.addEventListener("keydown", onKey, true);
+    return () => {
+      document.removeEventListener("click", onClick, true);
+      document.removeEventListener("dblclick", onClick, true);
+      document.removeEventListener("mousedown", onClick, true);
+      document.removeEventListener("keydown", onKey, true);
+    };
+  }, []);
+
   return (
     <div className="border border-neutral-300 rounded">
       <Toolbar editor={editor} advanced={advanced} onToggleAdvanced={() => setAdvanced((v) => !v)} />
