@@ -116,10 +116,16 @@ export function RichTextEditor({
       } catch (e) {
         metaSummary.__error = String(e);
       }
+      // Capture the call stack at this point so we can see which code
+      // path created the AddMarkStep. The transaction's meta is empty,
+      // which means whoever's authoring it isn't tagging with a plugin
+      // key — the stack trace is the only way to identify the caller.
+      const stack = new Error("rte-tx-stack").stack ?? "";
       // eslint-disable-next-line no-console
       console.log("[RTE] tx-mutating", {
         stepsJson: JSON.stringify(steps),
         metaJson: JSON.stringify(metaSummary),
+        stack,
       });
     },
     editorProps: {
