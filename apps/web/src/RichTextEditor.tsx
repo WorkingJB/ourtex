@@ -417,7 +417,18 @@ function ToolbarBtn({
   return (
     <button
       type="button"
-      onClick={onClick}
+      // Guard against synthetic detail:0 clicks. Something in the
+      // editor click pipeline is firing the bold button on every
+      // contenteditable click — verified via instrumentation — but
+      // never with a real `detail` (click count). Real mouse clicks
+      // always have detail >= 1; keyboard activation has detail 0
+      // *but* we don't bind keyboard shortcuts on these buttons (the
+      // editor's keymap handles ⌘B etc. directly), so dropping
+      // detail-0 clicks is safe.
+      onClick={(e) => {
+        if (e.detail === 0) return;
+        onClick(e);
+      }}
       title={title}
       disabled={disabled}
       className={[
