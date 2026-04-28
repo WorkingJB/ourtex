@@ -232,7 +232,14 @@ function ToolbarBtn({
 }) {
   return (
     <button
-      onClick={onClick}
+      type="button"
+      // Drop synthetic detail:0 clicks — see the matching fix in
+      // apps/web/src/RichTextEditor.tsx for the full diagnosis. Real
+      // mouse clicks always have detail >= 1.
+      onClick={(e) => {
+        if (e.detail === 0) return;
+        onClick();
+      }}
       title={title}
       disabled={disabled}
       className={[
